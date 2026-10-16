@@ -53,7 +53,7 @@ const DEMO_NODES: OrgChartNode[] = [
         description: '2 sections · 5 positions',
         children: [
           { id: 'accounting', label: 'Accounting', description: '3 positions' },
-          { id: 'payroll',    label: 'Payroll',    description: '2 positions' },
+          { id: 'payroll',    label: 'Payroll',    description: '2 positions · Inactive', tone: 'muted' },
         ],
       },
     ],
@@ -139,6 +139,8 @@ function mapToChart(node: OrgUnitTreeNode): OrgChartNode {
     id: node.id,
     label: node.name,
     description: \`\${levelLabel(node)} · \${positionsForUnit(node.id)} positions\`,
+    // Dashed, greyed-out card for units that are not active.
+    tone: node.status === 'active' ? 'default' : 'muted',
     children: node.children.map(mapToChart),
   };
 }
@@ -149,6 +151,8 @@ const chartNodes = orgTree.map(mapToChart);
   nodes={chartNodes}
   selectedId={selectedId}
   onSelect={setSelectedId}
+  // The user's zoom survives data refreshes; a new company scope re-fits.
+  fitKey={companyScope}
   aria-label="Organization chart"
 />`,
 };
@@ -174,7 +178,7 @@ export default function OrgChartPage() {
         <GallerySection
           id="overview"
           title="Overview"
-          description="Organization chart with zoom, pan, and node selection. Use the controls (top-right) to zoom in/out and reset."
+          description="Organization chart with zoom, pan, and node selection. Zoom with the controls (top-right), the wheel, or + / - / 0. The chart stays fitted until you zoom or pan; after that your view is kept through selection, data refreshes and resizes until you press Fit to screen or fitKey changes. Muted nodes mark inactive units."
         >
           <ShowcasePreview standalone center={false}>
             <OrgChart
@@ -224,7 +228,7 @@ export default function OrgChartPage() {
                   ['Layout',            'D3 tree algorithm (top-down)',         'Indent-based nesting'],
                   ['Zoom / Pan',        '✅ D3 zoom + wheel + drag',           '❌ Not applicable'],
                   ['Node metadata',     'label + description (SVG text)',      'label, description, badge, meta, actions slots'],
-                  ['Accessibility',     'role="img", controls keyboard only',  'Full WAI-ARIA tree, keyboard navigation'],
+                  ['Accessibility',     'Focusable nodes (Enter / Space), + / - / 0 zoom keys', 'Full WAI-ARIA tree, keyboard navigation'],
                   ['Best for',          'Visual org overview, presentation',   'Editable hierarchy, detailed metadata'],
                   ['Production source', 'CompanyStructurePage Diagram mode',   'CompanyStructurePage List mode'],
                 ].map(([feature, chart, tree]) => (

@@ -6,6 +6,25 @@ Format: [Semantic Versioning](https://semver.org). Entries are consumer-facing �
 
 ---
 
+## [1.7.43] — 2026-10-16
+
+### Bug Fixes
+
+- **`OrgChart`** — The chart no longer snaps back to the default zoom while the user is reading it. Before, it redrew and re-fitted on every `onSelect` identity change, on every `selectedId` change, and on any resize. Opening a modal counted as a resize because it hides the page scrollbar. The chart now stays fitted only until the user zooms or pans. After that their view is kept through selection, re-renders and data refreshes, and resizes keep the view's centre. Pressing **Fit to screen** returns the chart to auto-fit. Data updates are applied in place instead of redrawing the whole chart.
+
+### Component Improvements (all backward-compatible)
+
+- **`OrgChart`**
+  - `fitKey?: string | number`: when this value changes, the chart re-fits (for example after switching company scope).
+  - `OrgChartNode.tone?: 'default' | 'muted'`: draws a dashed, greyed-out card for inactive or archived units.
+  - Controls: zoom in, a live zoom %, zoom out, and **Fit to screen** (renamed from "Reset zoom"). The zoom buttons are disabled at the zoom limits. Button zoom skips its animation under `prefers-reduced-motion`.
+  - Keyboard: `+` / `=` zooms in, `-` zooms out, `0` fits. When `onSelect` is set, nodes are focusable buttons (Enter / Space select) with a focus ring, and a node off screen is brought into view when it receives focus.
+  - Nodes get a hover border. Long names and descriptions are cut short with an ellipsis, and the full text shows in a tooltip.
+  - Panning no longer counts as a node click (5px click tolerance). Double-click no longer zooms.
+  - An empty `nodes` array shows "No units to display" instead of a blank canvas.
+
+---
+
 ## [1.7.4] — 2026-09-06
 
 ### New Components
