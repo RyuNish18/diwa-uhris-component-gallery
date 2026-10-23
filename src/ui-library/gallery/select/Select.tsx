@@ -144,9 +144,14 @@ function CustomDropdown({
   useEffect(() => {
     if (!open) return;
     const handlePointerDown = (e: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
+      const target = e.target as Node;
+      // The option list is portaled to <body>, so it is NOT inside containerRef.
+      // Without also allowing listRef, pressing an option fires this mousedown,
+      // closes the panel, and unmounts the <li> before its click/onClick runs —
+      // making every option appear unclickable.
+      if (containerRef.current?.contains(target)) return;
+      if (listRef.current?.contains(target)) return;
+      setOpen(false);
     };
     document.addEventListener('mousedown', handlePointerDown);
     return () => document.removeEventListener('mousedown', handlePointerDown);
@@ -154,29 +159,45 @@ function CustomDropdown({
 
   // Compute portal panel position
   useEffect(() => {
-    if (!open || !triggerRef.current) return;
-    const rect = triggerRef.current.getBoundingClientRect();
-    const MARGIN = 8; // keep the panel off the very edge
-    const spaceBelow = window.innerHeight - rect.bottom - MARGIN;
-    const spaceAbove = rect.top - MARGIN;
-    // Open upward when there's little room below but more room above — otherwise
-    // the list would overflow past the viewport bottom and its lower options
-    // become unreachable (can't scroll a panel that extends off-screen).
-    const openUp = spaceBelow < 160 && spaceAbove > spaceBelow;
-    // Clamp the panel height to the available space (never taller than the
-    // design max of 240px) so the internal overflow-y-auto can scroll to every
-    // option regardless of where the trigger sits.
-    const maxHeight = Math.min(240, Math.max(120, openUp ? spaceAbove : spaceBelow));
-    setPanelStyle({
-      position: 'fixed',
-      ...(openUp
-        ? { bottom: window.innerHeight - rect.top + 4 }
-        : { top: rect.bottom + 4 }),
-      left: rect.left,
-      zIndex: 9999,
-      width: rect.width,
-      maxHeight,
-    });
+    if (!open) return;
+    let raf = 0;
+    const place = () => {
+      const trigger = triggerRef.current;
+      if (!trigger) return;
+      const rect = trigger.getBoundingClientRect();
+      const MARGIN = 8;
+      const spaceBelow = window.innerHeight - rect.bottom - MARGIN;
+      const spaceAbove = rect.top - MARGIN;
+      const openUp = spaceBelow < 160 && spaceAbove > spaceBelow;
+      const maxHeight = Math.min(240, Math.max(120, openUp ? spaceAbove : spaceBelow));
+
+      // The panel is portaled into the nearest dialog (so the scroll-lock allows
+      // gesture scrolling). Position it ABSOLUTE within that parent using the
+      // trigger's offset relative to the parent (handles the parent's own scroll
+      // and box). For document.body this is page coordinates.
+      const parent = (trigger.closest('[role="dialog"]') as HTMLElement | null) ?? document.body;
+      const isBody = parent === document.body;
+      const pr = isBody ? null : parent.getBoundingClientRect();
+      const left = rect.left - (pr?.left ?? 0) + parent.scrollLeft;
+      const topBelow = rect.bottom - (pr?.top ?? 0) + parent.scrollTop + 4;
+      const parentH = isBody ? window.innerHeight : parent.clientHeight;
+      const bottomAbove = parentH - (rect.top - (pr?.top ?? 0) + parent.scrollTop) + 4;
+
+      // Always provide BOTH top and bottom (one as undefined) so a previous
+      // value is cleared when the open direction changes.
+      setPanelStyle({
+        position: 'absolute',
+        top: openUp ? undefined : topBelow,
+        bottom: openUp ? bottomAbove : undefined,
+        left,
+        zIndex: 9999,
+        width: rect.width,
+        maxHeight,
+      });
+    };
+    // rAF so the rect is read after the panel mounts/layout settles.
+    raf = requestAnimationFrame(place);
+    return () => cancelAnimationFrame(raf);
   }, [open]);
 
   const handleSelect = useCallback((opt: SelectOption) => {
@@ -269,6 +290,16 @@ function CustomDropdown({
   // The trigger id for aria-labelledby on the listbox
   const effectiveTriggerId = id ?? triggerId;
 
+  // Portal target resolved synchronously at render: the nearest open dialog
+  // content when inside a Modal/Dialog, else <body>. Computing it here (not via
+  // state) avoids a null→target re-parent of the panel on open, which could
+  // detach an option mid-click and drop the click in real browsers. Portaling
+  // into the dialog also keeps the panel inside react-remove-scroll's allowed
+  // subtree so wheel/touch gestures scroll the list.
+  const portalTarget: HTMLElement =
+    (triggerRef.current?.closest('[role="dialog"]') as HTMLElement | null) ??
+    (typeof document !== 'undefined' ? document.body : (null as unknown as HTMLElement));
+
   return (
     <div className="relative" ref={containerRef}>
       <button
@@ -310,7 +341,12 @@ function CustomDropdown({
           id={listboxId}
           role="listbox"
           aria-labelledby={effectiveTriggerId}
-          style={panelStyle}
+          /* Marks this portaled panel as a floating layer so the design-system
+             Modal/Dialog (Radix) treats option clicks as "inside" and does not
+             swallow them as outside-interactions. Without this, options are
+             unclickable when the Select is rendered inside a Modal. */
+          data-pis-floating=""
+          style={{ ...panelStyle, pointerEvents: 'auto' }}
           className="overflow-y-auto rounded-xl border border-slate-200 bg-white py-1 shadow-xl"
         >
           {flatItems.map((fi, i) => {
@@ -350,7 +386,7 @@ function CustomDropdown({
             );
           })}
         </ul>,
-        document.body,
+        portalTarget,
       )}
     </div>
   );
