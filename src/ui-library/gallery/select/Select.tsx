@@ -156,12 +156,26 @@ function CustomDropdown({
   useEffect(() => {
     if (!open || !triggerRef.current) return;
     const rect = triggerRef.current.getBoundingClientRect();
+    const MARGIN = 8; // keep the panel off the very edge
+    const spaceBelow = window.innerHeight - rect.bottom - MARGIN;
+    const spaceAbove = rect.top - MARGIN;
+    // Open upward when there's little room below but more room above — otherwise
+    // the list would overflow past the viewport bottom and its lower options
+    // become unreachable (can't scroll a panel that extends off-screen).
+    const openUp = spaceBelow < 160 && spaceAbove > spaceBelow;
+    // Clamp the panel height to the available space (never taller than the
+    // design max of 240px) so the internal overflow-y-auto can scroll to every
+    // option regardless of where the trigger sits.
+    const maxHeight = Math.min(240, Math.max(120, openUp ? spaceAbove : spaceBelow));
     setPanelStyle({
       position: 'fixed',
-      top: rect.bottom + 4,
+      ...(openUp
+        ? { bottom: window.innerHeight - rect.top + 4 }
+        : { top: rect.bottom + 4 }),
       left: rect.left,
       zIndex: 9999,
       width: rect.width,
+      maxHeight,
     });
   }, [open]);
 
@@ -297,7 +311,7 @@ function CustomDropdown({
           role="listbox"
           aria-labelledby={effectiveTriggerId}
           style={panelStyle}
-          className="overflow-y-auto max-h-60 rounded-xl border border-slate-200 bg-white py-1 shadow-xl"
+          className="overflow-y-auto rounded-xl border border-slate-200 bg-white py-1 shadow-xl"
         >
           {flatItems.map((fi, i) => {
             if (fi.type === 'group') {
