@@ -230,7 +230,7 @@ export default function InstallationPage() {
                 <tbody className="divide-y divide-slate-100">
                   {[
                     ['Package name',      '@diwauhris/ui'],
-                    ['Current version',   '1.7.0'], // UPDATE THIS on every release bump
+                    ['Current version',   __APP_VERSION__],
                     ['Module formats',    'ESM (.mjs) + CJS (.cjs)'],
                     ['Type declarations', 'Included — lib/types/ui-library/index.d.ts'],
                     ['Stylesheet',        'lib/assets/ui.css (pre-compiled, self-contained)'],
