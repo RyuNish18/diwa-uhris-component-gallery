@@ -1,32 +1,29 @@
 /**
  * Select — Design System Component
  *
- * A single-value selection control. Wraps the native <select> element
- * with design-system styling. Accessible by default — keyboard and
- * screen-reader behavior is inherited from the browser.
+ * A single-value selection control. Renders a branded listbox (same look as
+ * Combobox) instead of the browser's native popup, whose OS-blue highlight
+ * cannot be styled and does not follow the DIWA palette.
  *
- * A custom dropdown (non-native) is NOT used here because:
- *   - Native <select> provides full keyboard/AT support at zero cost.
- *   - Custom dropdowns require significant ARIA authoring to match
- *     native behavior, and frequently regress in edge cases.
- *   - For searchable/multi-select use cases, use Combobox (Phase 3).
+ * A visually hidden native <select> is kept in sync so `name`, `required`,
+ * `form`, refs and `event.target.value` behave exactly as before.
+ *
+ * Keyboard support follows the native control: Enter/Space/Arrow keys open,
+ * Arrow/Home/End navigate, Enter/Space select, Escape closes, and typing
+ * jumps to the first matching option. For searchable lists, use Combobox.
  *
  * The label is NOT included. The consuming feature pairs a <label>.
- *
- * When renderOption is provided, a custom dropdown is rendered instead
- * of the native <select>. Only use this when native option rendering
- * is insufficient (e.g., icons, avatars, multi-line content).
  */
 
-import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ChevronDown } from 'lucide-react';
+import { Check, ChevronDown } from 'lucide-react';
 import {
   type FieldStatus,
   FIELD_STATUS_RING_DIRECT,
   FIELD_HELPER_COLOR,
 } from '../shared/fieldStatus';
-import { cn } from '../../../lib/utils';
+import { cn, FLOATING_LAYER_ATTR } from '../../../lib/utils';
 
 export type SelectStatus = FieldStatus;
 
@@ -46,17 +43,13 @@ export type SelectItem = SelectOption | SelectGroup;
 export interface SelectProps extends Omit<React.ComponentProps<'select'>, 'children'> {
   /** Flat options or grouped options */
   items: SelectItem[];
-  /** Placeholder option shown when no value is selected */
+  /** Text shown in the trigger when no value is selected */
   placeholder?: string;
   status?: SelectStatus;
   helper?: string;
-  /**
-   * Custom renderer for each option row. When provided, renders a custom
-   * dropdown instead of the native <select>. Only flat SelectOption items
-   * are passed — group labels are rendered as non-interactive dividers.
-   */
+  /** Custom renderer for each option row (icons, avatars, multi-line content). */
   renderOption?: (item: SelectOption) => React.ReactNode;
-  /** Ref forwarded to the native <select> element (ignored when renderOption is provided). */
+  /** Ref forwarded to the hidden native <select> (focusing it focuses the trigger). */
   ref?: React.Ref<HTMLSelectElement>;
 }
 
@@ -66,335 +59,12 @@ function isGroup(item: SelectItem): item is SelectGroup {
   return 'group' in item;
 }
 
-// ── CustomDropdown ────────────────────────────────────────────────────────────
-// Used only when renderOption is provided. Renders a custom accessible listbox.
-
-interface CustomDropdownProps {
-  items: SelectItem[];
-  value?: string | number | readonly string[];
-  placeholder?: string;
-  status: SelectStatus;
-  disabled?: boolean;
-  renderOption: (item: SelectOption) => React.ReactNode;
-  onChange?: React.ChangeEventHandler<HTMLSelectElement>;
-  id?: string;
-  'aria-label'?: string;
-  'aria-labelledby'?: string;
-  className?: string;
-}
-
-function CustomDropdown({
-  items,
-  value,
-  placeholder,
-  status,
-  disabled,
-  renderOption,
-  onChange,
-  id,
-  'aria-label': ariaLabel,
-  'aria-labelledby': ariaLabelledBy,
-  className = '',
-}: CustomDropdownProps) {
-  const [open, setOpen] = useState(false);
-  const [highlightIndex, setHighlightIndex] = useState(-1);
-  const containerRef = useRef<HTMLDivElement>(null);
-  const triggerRef = useRef<HTMLButtonElement>(null);
-  const listboxId = useId();
-  const triggerId = useId();
-  const optionId = (index: number) => `${listboxId}-opt-${index}`;
-  const [panelStyle, setPanelStyle] = useState<React.CSSProperties>({});
-
-  // Flatten items into options (preserving group headers)
-  const flatItems: Array<{ type: 'group'; label: string } | { type: 'option'; opt: SelectOption }> = [];
-  for (const item of items) {
-    if (isGroup(item)) {
-      flatItems.push({ type: 'group', label: item.group });
-      for (const opt of item.options) {
-        flatItems.push({ type: 'option', opt });
-      }
-    } else {
-      flatItems.push({ type: 'option', opt: item });
-    }
-  }
-
-  const flatOptions = flatItems.filter((fi): fi is { type: 'option'; opt: SelectOption } => fi.type === 'option').map((fi) => fi.opt);
-
-  const selectedOption = flatOptions.find((o) => String(o.value) === String(value ?? ''));
-  const displayLabel = selectedOption?.label ?? placeholder ?? '';
-  const hasValue = Boolean(selectedOption);
-
-  // Reset highlight when dropdown closes
-  useEffect(() => {
-    if (!open) setHighlightIndex(-1);
-  }, [open]);
-
-  // Scroll highlighted option into view
-  const listRef = useRef<HTMLUListElement>(null);
-  useEffect(() => {
-    if (highlightIndex >= 0 && listRef.current) {
-      const el = listRef.current.querySelector<HTMLElement>(`[id="${optionId(highlightIndex)}"]`);
-      el?.scrollIntoView({ block: 'nearest' });
-    }
-  // optionId is stable (derived from listboxId which is stable)
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [highlightIndex]);
-
-  // Close on outside click
-  useEffect(() => {
-    if (!open) return;
-    const handlePointerDown = (e: MouseEvent) => {
-      const target = e.target as Node;
-      // The option list is portaled to <body>, so it is NOT inside containerRef.
-      // Without also allowing listRef, pressing an option fires this mousedown,
-      // closes the panel, and unmounts the <li> before its click/onClick runs —
-      // making every option appear unclickable.
-      if (containerRef.current?.contains(target)) return;
-      if (listRef.current?.contains(target)) return;
-      setOpen(false);
-    };
-    document.addEventListener('mousedown', handlePointerDown);
-    return () => document.removeEventListener('mousedown', handlePointerDown);
-  }, [open]);
-
-  // Compute portal panel position
-  useEffect(() => {
-    if (!open) return;
-    let raf = 0;
-    const place = () => {
-      const trigger = triggerRef.current;
-      if (!trigger) return;
-      const rect = trigger.getBoundingClientRect();
-      const MARGIN = 8;
-      const spaceBelow = window.innerHeight - rect.bottom - MARGIN;
-      const spaceAbove = rect.top - MARGIN;
-      const openUp = spaceBelow < 160 && spaceAbove > spaceBelow;
-      const maxHeight = Math.min(240, Math.max(120, openUp ? spaceAbove : spaceBelow));
-
-      // The panel is portaled into the nearest dialog (so the scroll-lock allows
-      // gesture scrolling). Position it ABSOLUTE within that parent using the
-      // trigger's offset relative to the parent (handles the parent's own scroll
-      // and box). For document.body this is page coordinates.
-      const parent = (trigger.closest('[role="dialog"]') as HTMLElement | null) ?? document.body;
-      const isBody = parent === document.body;
-      const pr = isBody ? null : parent.getBoundingClientRect();
-      const left = rect.left - (pr?.left ?? 0) + parent.scrollLeft;
-      const topBelow = rect.bottom - (pr?.top ?? 0) + parent.scrollTop + 4;
-      const parentH = isBody ? window.innerHeight : parent.clientHeight;
-      const bottomAbove = parentH - (rect.top - (pr?.top ?? 0) + parent.scrollTop) + 4;
-
-      // Always provide BOTH top and bottom (one as undefined) so a previous
-      // value is cleared when the open direction changes.
-      setPanelStyle({
-        position: 'absolute',
-        top: openUp ? undefined : topBelow,
-        bottom: openUp ? bottomAbove : undefined,
-        left,
-        zIndex: 9999,
-        width: rect.width,
-        maxHeight,
-      });
-    };
-    // rAF so the rect is read after the panel mounts/layout settles.
-    raf = requestAnimationFrame(place);
-    return () => cancelAnimationFrame(raf);
-  }, [open]);
-
-  const handleSelect = useCallback((opt: SelectOption) => {
-    if (opt.disabled) return;
-    // Synthesize a change event so callers can use standard onChange
-    const syntheticEvent = {
-      target: { value: opt.value },
-      currentTarget: { value: opt.value },
-    } as unknown as React.ChangeEvent<HTMLSelectElement>;
-    onChange?.(syntheticEvent);
-    setOpen(false);
-    triggerRef.current?.focus();
-  }, [onChange]);
-
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLButtonElement>) => {
-    // Helper: find next enabled option index starting from `from`, direction +1 or -1
-    const nextEnabled = (from: number, dir: 1 | -1): number => {
-      let idx = from;
-      while (idx >= 0 && idx < flatOptions.length) {
-        if (!flatOptions[idx]?.disabled) return idx;
-        idx += dir;
-      }
-      return -1;
-    };
-
-    switch (e.key) {
-      case 'ArrowDown': {
-        e.preventDefault();
-        if (!open) {
-          setOpen(true);
-          // Highlight first enabled option on open
-          const first = nextEnabled(0, 1);
-          setHighlightIndex(first);
-        } else {
-          setHighlightIndex((prev) => {
-            const next = nextEnabled(prev + 1, 1);
-            return next === -1 ? prev : next;
-          });
-        }
-        break;
-      }
-      case 'ArrowUp': {
-        e.preventDefault();
-        if (open) {
-          setHighlightIndex((prev) => {
-            const next = nextEnabled(prev - 1, -1);
-            return next === -1 ? prev : next;
-          });
-        }
-        break;
-      }
-      case 'Home': {
-        e.preventDefault();
-        if (open) {
-          const first = nextEnabled(0, 1);
-          setHighlightIndex(first);
-        }
-        break;
-      }
-      case 'End': {
-        e.preventDefault();
-        if (open) {
-          const last = nextEnabled(flatOptions.length - 1, -1);
-          setHighlightIndex(last);
-        }
-        break;
-      }
-      case 'Enter':
-      case ' ': {
-        e.preventDefault();
-        if (!open) {
-          setOpen(true);
-        } else if (highlightIndex >= 0 && flatOptions[highlightIndex] && !flatOptions[highlightIndex].disabled) {
-          handleSelect(flatOptions[highlightIndex]);
-        } else {
-          setOpen(false);
-        }
-        break;
-      }
-      case 'Escape': {
-        e.preventDefault();
-        setOpen(false);
-        break;
-      }
-      default:
-        break;
-    }
-  };
-
-  // The trigger id for aria-labelledby on the listbox
-  const effectiveTriggerId = id ?? triggerId;
-
-  // Portal target resolved synchronously at render: the nearest open dialog
-  // content when inside a Modal/Dialog, else <body>. Computing it here (not via
-  // state) avoids a null→target re-parent of the panel on open, which could
-  // detach an option mid-click and drop the click in real browsers. Portaling
-  // into the dialog also keeps the panel inside react-remove-scroll's allowed
-  // subtree so wheel/touch gestures scroll the list.
-  const portalTarget: HTMLElement =
-    (triggerRef.current?.closest('[role="dialog"]') as HTMLElement | null) ??
-    (typeof document !== 'undefined' ? document.body : (null as unknown as HTMLElement));
-
-  return (
-    <div className="relative" ref={containerRef}>
-      <button
-        ref={triggerRef}
-        id={effectiveTriggerId}
-        type="button"
-        role="combobox"
-        aria-haspopup="listbox"
-        aria-expanded={open}
-        aria-controls={listboxId}
-        aria-activedescendant={open && highlightIndex >= 0 ? optionId(highlightIndex) : undefined}
-        aria-label={ariaLabel}
-        aria-labelledby={ariaLabelledBy}
-        disabled={disabled}
-        onClick={() => setOpen((v) => !v)}
-        onKeyDown={handleKeyDown}
-        className={cn(
-          'w-full appearance-none rounded-md border bg-white py-2.5 pl-4 pr-10 text-left text-sm font-medium outline-none transition',
-          FIELD_STATUS_RING_DIRECT[status],
-          hasValue ? 'text-slate-900' : 'text-slate-400',
-          disabled ? 'cursor-not-allowed bg-slate-50 opacity-60' : 'cursor-pointer',
-          className,
-        )}
-      >
-        {displayLabel}
-      </button>
-
-      {/* Custom caret */}
-      <span
-        className="pointer-events-none absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400"
-        aria-hidden="true"
-      >
-        <ChevronDown size={14} className={open ? 'rotate-180 transition-transform' : 'transition-transform'} />
-      </span>
-
-      {open && !disabled && createPortal(
-        <ul
-          ref={listRef}
-          id={listboxId}
-          role="listbox"
-          aria-labelledby={effectiveTriggerId}
-          /* Marks this portaled panel as a floating layer so the design-system
-             Modal/Dialog (Radix) treats option clicks as "inside" and does not
-             swallow them as outside-interactions. Without this, options are
-             unclickable when the Select is rendered inside a Modal. */
-          data-pis-floating=""
-          style={{ ...panelStyle, pointerEvents: 'auto' }}
-          className="overflow-y-auto rounded-xl border border-slate-200 bg-white py-1 shadow-xl"
-        >
-          {flatItems.map((fi, i) => {
-            if (fi.type === 'group') {
-              return (
-                <li key={`group-${fi.label}-${i}`} role="presentation" className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest text-slate-400">
-                  {fi.label}
-                </li>
-              );
-            }
-            const opt = fi.opt;
-            // Index into flatOptions for highlight tracking
-            const optIndex = flatOptions.indexOf(opt);
-            const isSelected = String(opt.value) === String(value ?? '');
-            const isHighlighted = optIndex === highlightIndex;
-            return (
-              <li
-                key={opt.value}
-                id={optionId(optIndex)}
-                role="option"
-                aria-selected={isSelected}
-                aria-disabled={opt.disabled}
-                onClick={() => handleSelect(opt)}
-                className={[
-                  'cursor-pointer px-3 py-2 text-sm transition-colors',
-                  opt.disabled ? 'cursor-not-allowed opacity-50' : '',
-                  isHighlighted && !opt.disabled ? 'bg-blue-50 font-semibold text-brand-blue' : '',
-                  isSelected && !isHighlighted ? 'bg-blue-50 font-semibold text-brand-blue' : '',
-                  !isHighlighted && !isSelected && !opt.disabled ? 'hover:bg-slate-50 text-slate-700' : '',
-                  opt.disabled ? 'text-slate-400' : '',
-                ]
-                  .filter(Boolean)
-                  .join(' ')}
-              >
-                {renderOption(opt)}
-              </li>
-            );
-          })}
-        </ul>,
-        portalTarget,
-      )}
-    </div>
-  );
-}
-
-// ── Style maps ────────────────────────────────────────────────────────────────
-// STATUS_CLASS and HELPER_CLASS use FIELD_STATUS_RING_DIRECT / FIELD_HELPER_COLOR
-// from shared/fieldStatus — same semantic mapping as Input and Textarea.
+const TYPEAHEAD_RESET_MS = 500;
+const PANEL_GAP = 4;
+const PANEL_MARGIN = 8;
+const PANEL_FLIP_THRESHOLD = 160;
+const PANEL_MIN_HEIGHT = 120;
+const PANEL_MAX_HEIGHT = 240;
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
@@ -407,79 +77,356 @@ export function Select({
   className = '',
   renderOption,
   ref,
-  ...props
+  value: valueProp,
+  defaultValue,
+  onChange,
+  name,
+  required,
+  form,
+  autoComplete,
+  onBlur,
+  onKeyDown,
+  ...rest
 }: SelectProps) {
-  if (renderOption) {
+  const isControlled = valueProp !== undefined;
+  const [internalValue, setInternalValue] = useState(String(defaultValue ?? ''));
+  const value = isControlled ? String(valueProp ?? '') : internalValue;
+
+  const [open, setOpen] = useState(false);
+  const [highlight, setHighlight] = useState(-1);
+  const [panelStyle, setPanelStyle] = useState<React.CSSProperties>({});
+  const [portalTarget, setPortalTarget] = useState<HTMLElement | null>(null);
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const listRef = useRef<HTMLUListElement>(null);
+  const nativeRef = useRef<HTMLSelectElement | null>(null);
+  const typeahead = useRef({ buffer: '', timer: 0 });
+
+  const uid = useId();
+  const listboxId = `${uid}-listbox`;
+  const helperId = `${uid}-helper`;
+  const optionId = (index: number) => `${uid}-option-${index}`;
+
+  const options: SelectOption[] = items.flatMap((item) => (isGroup(item) ? item.options : [item]));
+  const indexOf = new Map(options.map((opt, i) => [opt, i]));
+  const selectedIndex = options.findIndex((opt) => opt.value === value);
+  const selected = options[selectedIndex];
+  const hasValue = Boolean(selected) && selected.value !== '';
+  const displayLabel = selected?.label ?? placeholder ?? '';
+  const hasEmptyOption = options.some((opt) => opt.value === '');
+
+  const nextEnabled = (from: number, dir: 1 | -1) => {
+    for (let i = from; i >= 0 && i < options.length; i += dir) {
+      if (!options[i].disabled) return i;
+    }
+    return -1;
+  };
+
+  const setNativeRef = (node: HTMLSelectElement | null) => {
+    nativeRef.current = node;
+    if (typeof ref === 'function') ref(node);
+    else if (ref) (ref as React.RefObject<HTMLSelectElement | null>).current = node;
+  };
+
+  // ── Open / close / commit ──────────────────────────────────────────────────
+
+  const openList = (at: 'selected' | 'last' = 'selected') => {
+    if (disabled) return;
+    const fallback = at === 'last' ? nextEnabled(options.length - 1, -1) : nextEnabled(0, 1);
+    setHighlight(at === 'selected' && selected && !selected.disabled ? selectedIndex : fallback);
+    setPortalTarget(wrapperRef.current?.closest<HTMLElement>('[role="dialog"]') ?? document.body);
+    setOpen(true);
+  };
+
+  const commit = (opt: SelectOption) => {
+    if (opt.disabled) return;
+    if (!isControlled) setInternalValue(opt.value);
+    const native = nativeRef.current;
+    if (native) native.value = opt.value;
+    const target = native ?? { value: opt.value, name };
+    onChange?.({ target, currentTarget: target, type: 'change' } as unknown as React.ChangeEvent<HTMLSelectElement>);
+    setOpen(false);
+    triggerRef.current?.focus();
+  };
+
+  // ── Panel positioning: anchored to the trigger while any ancestor scrolls ──
+  // Inside a Modal/Dialog the panel is portaled into the dialog so its scroll
+  // lock lets wheel/touch gestures scroll the list. There it is positioned
+  // absolute against its offset parent, which also survives transformed
+  // dialogs (a transform would break position: fixed).
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    let raf = 0;
+    let prev = '';
+    const place = () => {
+      const rect = wrapperRef.current?.getBoundingClientRect();
+      const list = listRef.current;
+      if (rect && list) {
+        const spaceBelow = window.innerHeight - rect.bottom - PANEL_MARGIN;
+        const spaceAbove = rect.top - PANEL_MARGIN;
+        const dropUp = spaceBelow < PANEL_FLIP_THRESHOLD && spaceAbove > spaceBelow;
+        const maxHeight = Math.min(PANEL_MAX_HEIGHT, Math.max(PANEL_MIN_HEIGHT, dropUp ? spaceAbove : spaceBelow));
+
+        const inBody = list.parentElement === document.body;
+        const parent = inBody ? null : (list.offsetParent as HTMLElement | null) ?? list.parentElement;
+        const pr = parent?.getBoundingClientRect();
+        const dx = parent && pr ? pr.left + parent.clientLeft - parent.scrollLeft : 0;
+        const dy = parent && pr ? pr.top + parent.clientTop - parent.scrollTop : 0;
+
+        const next = {
+          position: inBody ? 'fixed' : 'absolute',
+          top: (dropUp ? rect.top - PANEL_GAP : rect.bottom + PANEL_GAP) - dy,
+          left: rect.left - dx,
+          width: rect.width,
+          maxHeight,
+          transform: dropUp ? 'translateY(-100%)' : undefined,
+        } as const;
+        const key = JSON.stringify(next);
+        if (key !== prev) {
+          prev = key;
+          setPanelStyle({ zIndex: 9999, ...next });
+        }
+      }
+      raf = requestAnimationFrame(place);
+    };
+    place();
+    return () => cancelAnimationFrame(raf);
+  }, [open]);
+
+  // ── Dismissal: outside press, and Escape before a parent Modal sees it ─────
+
+  useEffect(() => {
+    if (!open) return;
+    const handlePointerDown = (e: MouseEvent) => {
+      const target = e.target as Node;
+      if (!wrapperRef.current?.contains(target) && !listRef.current?.contains(target)) setOpen(false);
+    };
+    // Window capture runs before Radix's document-level Escape listener, so
+    // Escape closes only this listbox, not the surrounding Modal/Dialog.
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      e.stopPropagation();
+      setOpen(false);
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    window.addEventListener('keydown', handleEscape, true);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      window.removeEventListener('keydown', handleEscape, true);
+    };
+  }, [open]);
+
+  // Scroll only the list (never the page) to keep the highlighted option visible.
+  useEffect(() => {
+    const list = listRef.current;
+    const el = open && highlight >= 0 ? document.getElementById(optionId(highlight)) : null;
+    if (!list || !el) return;
+    if (el.offsetTop < list.scrollTop) list.scrollTop = el.offsetTop;
+    else if (el.offsetTop + el.offsetHeight > list.scrollTop + list.clientHeight) {
+      list.scrollTop = el.offsetTop + el.offsetHeight - list.clientHeight;
+    }
+    // optionId is derived from a stable useId value
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, highlight]);
+
+  useEffect(() => () => window.clearTimeout(typeahead.current.timer), []);
+
+  // ── Keyboard ───────────────────────────────────────────────────────────────
+
+  const handleTypeahead = (char: string) => {
+    const state = typeahead.current;
+    window.clearTimeout(state.timer);
+    state.buffer += char.toLowerCase();
+    state.timer = window.setTimeout(() => { state.buffer = ''; }, TYPEAHEAD_RESET_MS);
+
+    // Repeating one letter cycles through options starting with it.
+    const query = [...state.buffer].every((c) => c === state.buffer[0]) ? state.buffer[0] : state.buffer;
+    const current = open ? highlight : selectedIndex;
+    const start = query.length > 1 ? Math.max(current, 0) : current + 1;
+    const ordered = [...options.slice(start), ...options.slice(0, start)];
+    const match = ordered.find((opt) => !opt.disabled && opt.label.toLowerCase().startsWith(query));
+    if (!match) return;
+    if (open) setHighlight(indexOf.get(match)!);
+    else commit(match);
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLButtonElement>) => {
+    (onKeyDown as React.KeyboardEventHandler<HTMLButtonElement> | undefined)?.(e);
+    if (e.defaultPrevented) return;
+
+    const move = (from: number, dir: 1 | -1) =>
+      setHighlight((prev) => {
+        const next = nextEnabled(from === -1 ? prev + dir : from, dir);
+        return next === -1 ? prev : next;
+      });
+
+    switch (e.key) {
+      case 'ArrowDown':
+      case 'ArrowUp':
+        e.preventDefault();
+        if (!open) openList();
+        else move(-1, e.key === 'ArrowDown' ? 1 : -1);
+        break;
+      case 'Home':
+      case 'End':
+        if (!open) break;
+        e.preventDefault();
+        move(e.key === 'Home' ? 0 : options.length - 1, e.key === 'Home' ? 1 : -1);
+        break;
+      case 'Enter':
+      case ' ':
+        e.preventDefault();
+        if (!open) openList();
+        else if (options[highlight] && !options[highlight].disabled) commit(options[highlight]);
+        else setOpen(false);
+        break;
+      case 'Tab':
+        setOpen(false);
+        break;
+      default:
+        if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+          e.preventDefault();
+          handleTypeahead(e.key);
+        }
+    }
+  };
+
+  // ── Render ─────────────────────────────────────────────────────────────────
+
+  const renderItem = (opt: SelectOption) => {
+    const index = indexOf.get(opt)!;
+    const isSelected = opt.value === value;
     return (
-      <div className="w-full">
-        <CustomDropdown
-          items={items}
-          value={props.value}
-          placeholder={placeholder}
-          status={status}
-          disabled={disabled}
-          renderOption={renderOption}
-          onChange={props.onChange as React.ChangeEventHandler<HTMLSelectElement> | undefined}
-          id={props.id}
-          aria-label={props['aria-label']}
-          aria-labelledby={props['aria-labelledby']}
-          className={className}
-        />
-        {helper && (
-          <p className={`mt-1.5 text-xs font-medium ${FIELD_HELPER_COLOR[status]}`}>{helper}</p>
+      <li
+        key={`${opt.value}-${index}`}
+        id={optionId(index)}
+        role="option"
+        aria-selected={isSelected}
+        aria-disabled={opt.disabled || undefined}
+        onMouseEnter={() => { if (!opt.disabled) setHighlight(index); }}
+        onClick={() => commit(opt)}
+        className={cn(
+          'flex cursor-pointer items-center gap-2 px-3 py-2 text-sm text-slate-700 transition-colors',
+          index === highlight && !opt.disabled && 'bg-blue-50 text-brand-blue',
+          isSelected && 'font-semibold text-brand-blue',
+          opt.disabled && 'cursor-not-allowed text-slate-400 opacity-50',
         )}
-      </div>
+      >
+        <span className="min-w-0 flex-1 truncate">{renderOption ? renderOption(opt) : opt.label}</span>
+        {isSelected && <Check size={14} aria-hidden="true" className="shrink-0" />}
+      </li>
     );
-  }
+  };
+
+  const describedBy = [rest['aria-describedby'], helper && helperId].filter(Boolean).join(' ') || undefined;
 
   return (
     <div className="w-full">
-      <div className="relative">
+      <div ref={wrapperRef} className="relative">
         <select
-          ref={ref}
+          ref={setNativeRef}
+          name={name}
+          required={required}
+          form={form}
+          autoComplete={autoComplete}
           disabled={disabled}
-          className={cn(
-            'w-full appearance-none rounded-md border bg-white py-2.5 pl-4 pr-10 text-sm font-medium text-slate-900 outline-none transition',
-            FIELD_STATUS_RING_DIRECT[status],
-            disabled ? 'cursor-not-allowed bg-slate-50 opacity-60' : 'cursor-pointer',
-            className,
-          )}
-          {...props}
+          value={value}
+          onChange={() => {}}
+          onFocus={() => triggerRef.current?.focus()}
+          tabIndex={-1}
+          aria-hidden="true"
+          className="sr-only"
         >
-          {placeholder && (
-            <option value="" disabled>
-              {placeholder}
+          {!hasEmptyOption && <option value="" />}
+          {options.map((opt, i) => (
+            <option key={`${opt.value}-${i}`} value={opt.value} disabled={opt.disabled}>
+              {opt.label}
             </option>
-          )}
-
-          {items.map((item) =>
-            isGroup(item) ? (
-              <optgroup key={item.group} label={item.group}>
-                {item.options.map((opt) => (
-                  <option key={opt.value} value={opt.value} disabled={opt.disabled}>
-                    {opt.label}
-                  </option>
-                ))}
-              </optgroup>
-            ) : (
-              <option key={item.value} value={item.value} disabled={item.disabled}>
-                {item.label}
-              </option>
-            ),
-          )}
+          ))}
         </select>
 
-        {/* Custom caret — purely decorative */}
-        <span
-          className="pointer-events-none absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400"
-          aria-hidden="true"
+        <button
+          {...(rest as unknown as React.ButtonHTMLAttributes<HTMLButtonElement>)}
+          ref={triggerRef}
+          type="button"
+          role="combobox"
+          aria-haspopup="listbox"
+          aria-expanded={open}
+          aria-controls={open ? listboxId : undefined}
+          aria-activedescendant={open && highlight >= 0 ? optionId(highlight) : undefined}
+          aria-required={required || undefined}
+          aria-describedby={describedBy}
+          disabled={disabled}
+          onClick={() => (open ? setOpen(false) : openList())}
+          onKeyDown={handleKeyDown}
+          onBlur={(e) => {
+            setOpen(false);
+            (onBlur as React.FocusEventHandler<HTMLButtonElement> | undefined)?.(e);
+          }}
+          className={cn(
+            'w-full rounded-xl border bg-slate-50 py-2.5 pl-4 pr-10 text-left text-sm font-medium outline-none transition',
+            FIELD_STATUS_RING_DIRECT[status],
+            hasValue ? 'text-slate-900' : 'text-slate-400',
+            disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer',
+            className,
+          )}
         >
-          <ChevronDown size={14} />
-        </span>
+          <span className="block truncate">{displayLabel || '\u00A0'}</span>
+        </button>
+
+        <ChevronDown
+          size={16}
+          aria-hidden="true"
+          className={cn(
+            'pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 transition-transform',
+            open && 'rotate-180',
+          )}
+        />
       </div>
 
+      {open && !disabled && portalTarget && createPortal(
+        <ul
+          ref={listRef}
+          id={listboxId}
+          role="listbox"
+          aria-label={rest['aria-label']}
+          aria-labelledby={rest['aria-labelledby']}
+          // Stay clickable (and not count as "outside") inside an open
+          // Modal/Dialog, which sets pointer-events: none on <body>.
+          {...{ [FLOATING_LAYER_ATTR]: '' }}
+          style={{ position: 'fixed', ...panelStyle, pointerEvents: 'auto' }}
+          // Keep focus on the trigger so aria-activedescendant stays valid.
+          onMouseDown={(e) => e.preventDefault()}
+          className="max-h-60 overflow-y-auto overscroll-contain rounded-xl border border-slate-200 bg-white py-1 shadow-lg [scrollbar-color:theme(colors.slate.300)_transparent] [scrollbar-width:thin]"
+        >
+          {options.length === 0 && (
+            <li role="presentation" className="px-3 py-2 text-sm font-semibold text-slate-400">No options</li>
+          )}
+          {items.map((item, gi) =>
+            isGroup(item) ? (
+              <li key={`group-${item.group}-${gi}`} role="presentation">
+                <div
+                  id={`${uid}-group-${gi}`}
+                  className="px-3 pb-1 pt-2 text-[10px] font-bold uppercase tracking-widest text-slate-400"
+                >
+                  {item.group}
+                </div>
+                <ul role="group" aria-labelledby={`${uid}-group-${gi}`}>
+                  {item.options.map(renderItem)}
+                </ul>
+              </li>
+            ) : (
+              renderItem(item)
+            ),
+          )}
+        </ul>,
+        portalTarget,
+      )}
+
       {helper && (
-        <p className={`mt-1.5 text-xs font-medium ${FIELD_HELPER_COLOR[status]}`}>{helper}</p>
+        <p id={helperId} className={`mt-1.5 text-xs font-medium ${FIELD_HELPER_COLOR[status]}`}>{helper}</p>
       )}
     </div>
   );

@@ -6,6 +6,23 @@ Format: [Semantic Versioning](https://semver.org). Entries are consumer-facing �
 
 ---
 
+## [1.7.46] — 2026-10-26
+
+### Bug Fixes
+
+- **`Select`** — The open dropdown now follows the DIWA palette instead of the browser's native popup, whose bright OS-blue (`#007BFF`) highlight could not be styled. Every `Select` renders a branded listbox that matches `Combobox`: a pale-blue highlight with brand-blue text, and the selected option in bold with a check mark. The closed field also matches `Combobox` (rounded, `bg-slate-50`). Options with an empty value (e.g. "Choose rank") show in placeholder grey in the closed field.
+- **`Select`** inside a `Modal`/`Dialog` — Options are clickable, the list scrolls with the wheel or touch, and Escape closes only the list, not the dialog.
+
+### Component Improvements (all backward-compatible)
+
+- **`Select`**
+  - A hidden native `<select>` stays in sync, so `name`, `required`, `form`, `ref` and form submission work unchanged, and `onChange` still receives `event.target.value`.
+  - Keyboard parity with the native control: Enter / Space / Arrow keys open on the current value, Arrow / Home / End navigate (disabled options are skipped), and typing jumps to the first matching option.
+  - The list opens upward when there is no room below, and its height fits the available space.
+  - `helper` text is linked to the trigger via `aria-describedby`.
+
+---
+
 ## [1.7.43] — 2026-10-16
 
 ### Bug Fixes
