@@ -88,6 +88,13 @@ export function Dropdown({
     const updatePosition = () => {
       if (!triggerRef.current) return;
       const rect = triggerRef.current.getBoundingClientRect();
+      // If the trigger has scrolled out of the viewport, there's nothing to
+      // anchor to — keeping the panel open would strand it mid-screen, detached
+      // from its (now off-screen) trigger. Close instead.
+      if (rect.bottom <= 0 || rect.top >= window.innerHeight) {
+        onClose();
+        return;
+      }
       // Measured once the panel has mounted; fall back to its max-height (280)
       // on the very first pass before the ref is populated.
       const panelHeight = panelRef.current?.offsetHeight ?? 280;
@@ -128,7 +135,7 @@ export function Dropdown({
       window.removeEventListener('scroll', updatePosition, true);
       window.removeEventListener('resize', updatePosition);
     };
-  }, [isOpen]);
+  }, [isOpen, onClose]);
 
   // Close on outside mousedown — return focus to trigger
   useEffect(() => {
