@@ -93,32 +93,58 @@ export function Combobox({ value: controlledValue, defaultValue = '', onChange, 
   const isOpenRef = useRef(isOpen);
   useEffect(() => { isOpenRef.current = isOpen; });
 
+  // Nearest scrollable ancestor — used to clip/hide the portaled panel so it
+  // stays within a scroll container (e.g. a Modal body) and disappears when the
+  // input scrolls out of that container instead of floating over its header.
+  const scrollParentOf = (el: HTMLElement | null): HTMLElement | null => {
+    let node = el?.parentElement ?? null;
+    while (node) {
+      const s = getComputedStyle(node);
+      if (/(auto|scroll|overlay)/.test(s.overflowY) || /(auto|scroll|overlay)/.test(s.overflowX)) return node;
+      node = node.parentElement;
+    }
+    return null;
+  };
+
   useEffect(() => {
-    // Track previous rect to skip setState when nothing moved
-    let prevTop: number | undefined;
-    let prevBottom: number | undefined;
-    let prevLeft = 0;
-    let prevWidth = 0;
+    // Track previous style to skip setState when nothing moved
+    let prevKey = '';
     let rafId: number;
 
     const loop = () => {
       if (isOpenRef.current && wrapperRef.current) {
         const rect = wrapperRef.current.getBoundingClientRect();
-        const spaceBelow = window.innerHeight - rect.bottom;
-        const dropUp = spaceBelow < 240 && rect.top > 240;
-        const nextTop = dropUp ? undefined : rect.bottom + 4;
-        const nextBottom = dropUp ? (window.innerHeight - rect.top + 4) : undefined;
+        const GAP = 4;
+        const MARGIN = 8; // keep the panel clear of the edge
+        const PANEL_MAX = 240; // design cap (matches max-h-60)
 
-        if (
-          nextTop !== prevTop ||
-          nextBottom !== prevBottom ||
-          rect.left !== prevLeft ||
-          rect.width !== prevWidth
-        ) {
-          prevTop = nextTop;
-          prevBottom = nextBottom;
-          prevLeft = rect.left;
-          prevWidth = rect.width;
+        // Clip bounds = intersection of the viewport and the nearest scroll
+        // ancestor's box. The panel must never extend past these, and the input
+        // must be within them to keep the panel visible.
+        const scrollParent = scrollParentOf(wrapperRef.current);
+        const spRect = scrollParent?.getBoundingClientRect();
+        const clipTop = Math.max(0, spRect ? spRect.top : 0);
+        const clipBottom = Math.min(window.innerHeight, spRect ? spRect.bottom : window.innerHeight);
+
+        // Hide the panel when the input has scrolled out of the clip region —
+        // otherwise a body-portaled fixed panel keeps floating over the header.
+        const inputVisible = rect.bottom > clipTop + 2 && rect.top < clipBottom - 2;
+
+        const spaceBelow = clipBottom - rect.bottom - GAP - MARGIN;
+        const spaceAbove = rect.top - clipTop - GAP - MARGIN;
+        // Prefer dropping DOWN; only flip up when below can't fit a reasonable
+        // panel and there's more room above.
+        const dropUp = spaceBelow < 160 && spaceAbove > spaceBelow;
+        // Clamp height to the available space on the chosen side (bounded by the
+        // scroll container), so the panel can't spill past the modal edges.
+        const avail = Math.max(0, dropUp ? spaceAbove : spaceBelow);
+        const nextMaxHeight = Math.max(80, Math.min(PANEL_MAX, avail));
+        const nextTop = dropUp ? undefined : rect.bottom + GAP;
+        const nextBottom = dropUp ? (window.innerHeight - rect.top + GAP) : undefined;
+
+        const key = `${inputVisible}|${nextTop}|${nextBottom}|${rect.left}|${rect.width}|${nextMaxHeight}`;
+        if (key !== prevKey) {
+          prevKey = key;
           setPanelStyle({
             position: 'fixed',
             top: nextTop,
@@ -126,8 +152,10 @@ export function Combobox({ value: controlledValue, defaultValue = '', onChange, 
             left: rect.left,
             zIndex: 9999,
             width: rect.width,
-            // Radix Dialog sets pointer-events:none on <body> while open.
-            pointerEvents: 'auto',
+            maxHeight: nextMaxHeight,
+            // Hide (without unmounting) when the input is scrolled out of view.
+            visibility: inputVisible ? 'visible' : 'hidden',
+            pointerEvents: inputVisible ? 'auto' : 'none',
             overscrollBehavior: 'contain',
           });
         }
