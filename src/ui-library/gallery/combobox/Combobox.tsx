@@ -93,17 +93,25 @@ export function Combobox({ value: controlledValue, defaultValue = '', onChange, 
   const isOpenRef = useRef(isOpen);
   useEffect(() => { isOpenRef.current = isOpen; });
 
-  // Nearest scrollable ancestor — used to clip/hide the portaled panel so it
-  // stays within a scroll container (e.g. a Modal body) and disappears when the
-  // input scrolls out of that container instead of floating over its header.
-  const scrollParentOf = (el: HTMLElement | null): HTMLElement | null => {
+  // Vertical clip bounds for the portaled panel: intersect the viewport with
+  // every ancestor that clips vertically (overflowY auto/scroll/hidden/overlay).
+  // Used to (a) bound the panel inside a scroll container like a Modal body, and
+  // (b) hide it when the input scrolls out of that container instead of floating
+  // over the header. Ancestors that only scroll horizontally are ignored.
+  const verticalClipBounds = (el: HTMLElement | null): { top: number; bottom: number } => {
+    let top = 0;
+    let bottom = window.innerHeight;
     let node = el?.parentElement ?? null;
-    while (node) {
+    while (node && node !== document.body && node !== document.documentElement) {
       const s = getComputedStyle(node);
-      if (/(auto|scroll|overlay)/.test(s.overflowY) || /(auto|scroll|overlay)/.test(s.overflowX)) return node;
+      if (/(auto|scroll|hidden|overlay)/.test(s.overflowY)) {
+        const r = node.getBoundingClientRect();
+        if (r.top > top) top = r.top;
+        if (r.bottom < bottom) bottom = r.bottom;
+      }
       node = node.parentElement;
     }
-    return null;
+    return { top, bottom };
   };
 
   useEffect(() => {
@@ -118,13 +126,12 @@ export function Combobox({ value: controlledValue, defaultValue = '', onChange, 
         const MARGIN = 8; // keep the panel clear of the edge
         const PANEL_MAX = 240; // design cap (matches max-h-60)
 
-        // Clip bounds = intersection of the viewport and the nearest scroll
-        // ancestor's box. The panel must never extend past these, and the input
-        // must be within them to keep the panel visible.
-        const scrollParent = scrollParentOf(wrapperRef.current);
-        const spRect = scrollParent?.getBoundingClientRect();
-        const clipTop = Math.max(0, spRect ? spRect.top : 0);
-        const clipBottom = Math.min(window.innerHeight, spRect ? spRect.bottom : window.innerHeight);
+        // Clip bounds = intersection of the viewport and every vertical-clipping
+        // ancestor (e.g. a Modal body). The panel must never extend past these,
+        // and the input must be within them to keep the panel visible.
+        const clip = verticalClipBounds(wrapperRef.current);
+        const clipTop = clip.top;
+        const clipBottom = clip.bottom;
 
         // Hide the panel when the input has scrolled out of the clip region —
         // otherwise a body-portaled fixed panel keeps floating over the header.
