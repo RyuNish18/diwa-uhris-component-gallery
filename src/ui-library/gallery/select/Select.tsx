@@ -66,6 +66,72 @@ const PANEL_FLIP_THRESHOLD = 160;
 const PANEL_MIN_HEIGHT = 120;
 const PANEL_MAX_HEIGHT = 240;
 
+export interface PanelStyle {
+  position: 'fixed';
+  top: number;
+  left: number;
+  width: number;
+  maxHeight: number;
+}
+
+/**
+ * Computes the fixed-position style for the option panel so it:
+ *  - anchors to the trigger (`triggerRect`),
+ *  - stays within its container bounds (`boundTop`/`boundBottom` — the visible
+ *    area of a Modal/Dialog, or the viewport when portaled to <body>),
+ *  - flips up only when there isn't enough room below,
+ *  - and is height-clamped so it never spills past the container on either side.
+ *
+ * Fixed positioning (viewport coords) avoids the offset-parent/scroll-delta math
+ * that made an absolutely-positioned panel detach from its trigger inside a
+ * scrolling modal body. Exported for unit testing (see select-panel-position test).
+ */
+export function computeSelectPanelStyle(
+  triggerRect: { top: number; bottom: number; left: number; width: number },
+  boundTop: number,
+  boundBottom: number,
+  measuredHeight?: number,
+): PanelStyle {
+  const spaceBelow = boundBottom - triggerRect.bottom - PANEL_GAP - PANEL_MARGIN;
+  const spaceAbove = triggerRect.top - boundTop - PANEL_GAP - PANEL_MARGIN;
+  const dropUp = spaceBelow < PANEL_FLIP_THRESHOLD && spaceAbove > spaceBelow;
+
+  const avail = Math.max(0, dropUp ? spaceAbove : spaceBelow);
+  const maxHeight = Math.max(PANEL_MIN_HEIGHT, Math.min(PANEL_MAX_HEIGHT, avail));
+
+  // The panel's rendered height = its content, capped by maxHeight. Anchor a
+  // drop-up panel to this ACTUAL height (not maxHeight) so its bottom sits snug
+  // above the trigger — otherwise a short list (e.g. 3 options) flipped up leaves
+  // a large empty gap between the panel and the trigger. Falls back to maxHeight
+  // before the panel has been measured (first paint).
+  const panelHeight = Math.min(maxHeight, measuredHeight ?? maxHeight);
+
+  let top = dropUp ? triggerRect.top - PANEL_GAP - panelHeight : triggerRect.bottom + PANEL_GAP;
+  // Clamp so the panel (at its rendered height) never crosses a container edge.
+  const minTop = boundTop + PANEL_MARGIN;
+  const maxTop = boundBottom - PANEL_MARGIN - panelHeight;
+  top = Math.min(Math.max(top, minTop), Math.max(minTop, maxTop));
+
+  return { position: 'fixed', top, left: triggerRect.left, width: triggerRect.width, maxHeight };
+}
+
+/**
+ * Nearest scrollable ancestor of `el` (the first with overflow-y auto/scroll/
+ * overlay), used to bound the option panel. In a Modal/Dialog this is the
+ * `overflow-y-auto` body, whose box sits between the pinned header and footer —
+ * so clamping to it keeps the panel from crossing either. Returns null when
+ * nothing scrollable is found (panel then bounds to the viewport).
+ */
+function getScrollableAncestor(el: HTMLElement | null): HTMLElement | null {
+  let node = el?.parentElement ?? null;
+  while (node && node !== document.body && node !== document.documentElement) {
+    const oy = getComputedStyle(node).overflowY;
+    if (/(auto|scroll|overlay)/.test(oy)) return node;
+    node = node.parentElement;
+  }
+  return null;
+}
+
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export function Select({
@@ -162,37 +228,42 @@ export function Select({
     const place = () => {
       const rect = wrapperRef.current?.getBoundingClientRect();
       const list = listRef.current;
-      if (rect && list) {
-        const spaceBelow = window.innerHeight - rect.bottom - PANEL_MARGIN;
-        const spaceAbove = rect.top - PANEL_MARGIN;
-        const dropUp = spaceBelow < PANEL_FLIP_THRESHOLD && spaceAbove > spaceBelow;
-        const maxHeight = Math.min(PANEL_MAX_HEIGHT, Math.max(PANEL_MIN_HEIGHT, dropUp ? spaceAbove : spaceBelow));
+      if (rect) {
+        // Vertical bounds the panel must stay within. The panel must not cross a
+        // modal's pinned header or footer, so we clamp to the nearest SCROLLABLE
+        // ancestor of the trigger (a Modal/Dialog's `overflow-y-auto` body sits
+        // exactly between its header and footer). Falls back to the viewport when
+        // there's no such container (body-portaled selects). Intersected with the
+        // viewport so an offscreen/oversized container can't push it off-screen.
+        const scroller = getScrollableAncestor(wrapperRef.current);
+        const cr = scroller?.getBoundingClientRect();
+        const boundTop = Math.max(0, cr ? cr.top : 0);
+        const boundBottom = Math.min(window.innerHeight, cr ? cr.bottom : window.innerHeight);
 
-        const inBody = list.parentElement === document.body;
-        const parent = inBody ? null : (list.offsetParent as HTMLElement | null) ?? list.parentElement;
-        const pr = parent?.getBoundingClientRect();
-        const dx = parent && pr ? pr.left + parent.clientLeft - parent.scrollLeft : 0;
-        const dy = parent && pr ? pr.top + parent.clientTop - parent.scrollTop : 0;
+        // If the trigger has scrolled out of the container's visible area (behind
+        // a pinned header or footer), close the dropdown rather than pinning the
+        // panel to the edge and sliding it along — that matches normal
+        // scroll-away dismissal and keeps the panel anchored to its trigger.
+        if (cr && (rect.bottom <= boundTop || rect.top >= boundBottom)) {
+          setOpen(false);
+          return;
+        }
 
-        const next = {
-          position: inBody ? 'fixed' : 'absolute',
-          top: (dropUp ? rect.top - PANEL_GAP : rect.bottom + PANEL_GAP) - dy,
-          left: rect.left - dx,
-          width: rect.width,
-          maxHeight,
-          transform: dropUp ? 'translateY(-100%)' : undefined,
-        } as const;
-        const key = JSON.stringify(next);
+        // scrollHeight = the panel's natural content height (ignores the maxHeight
+        // cap), so a short list anchors snug to the trigger with no empty gap.
+        const measured = list ? list.scrollHeight : undefined;
+        const style = computeSelectPanelStyle(rect, boundTop, boundBottom, measured);
+        const key = JSON.stringify(style);
         if (key !== prev) {
           prev = key;
-          setPanelStyle({ zIndex: 9999, ...next });
+          setPanelStyle({ zIndex: 9999, ...style });
         }
       }
       raf = requestAnimationFrame(place);
     };
     place();
     return () => cancelAnimationFrame(raf);
-  }, [open]);
+  }, [open, portalTarget]);
 
   // ── Dismissal: outside press, and Escape before a parent Modal sees it ─────
 
