@@ -54,7 +54,9 @@ export function Combobox({ value: controlledValue, defaultValue = '', onChange, 
   const listboxId = `${uid}-listbox`;
   const optionId = (index: number) => `${uid}-option-${index}`;
 
-  const q = search.toLowerCase().trim();
+  // Only filter once the user has typed; opening with a selected value shows every option.
+  const [typed, setTyped] = useState(false);
+  const q = typed ? search.toLowerCase().trim() : '';
   const DISPLAY_LIMIT = 100;
   const filtered = q.length === 0
     ? options
@@ -175,7 +177,7 @@ export function Combobox({ value: controlledValue, defaultValue = '', onChange, 
   }, []); // mount-once — loop checks isOpenRef each frame
 
   // eslint-disable-next-line react-hooks/set-state-in-effect
-  useEffect(() => { if (!isOpen) setHighlightIndex(-1); }, [isOpen]);
+  useEffect(() => { if (!isOpen) { setHighlightIndex(-1); setTyped(false); } }, [isOpen]);
 
   useEffect(() => {
     if (highlightIndex >= 0 && listRef.current) {
@@ -196,6 +198,7 @@ export function Combobox({ value: controlledValue, defaultValue = '', onChange, 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = e.target.value;
     setSearch(val);
+    setTyped(true);
     if (!isControlled) setInternalValue(val);
     setIsOpen(true);
     setHighlightIndex(-1);
@@ -263,7 +266,7 @@ export function Combobox({ value: controlledValue, defaultValue = '', onChange, 
           aria-label={ariaLabel}
           value={search}
           onChange={handleInputChange}
-          onFocus={() => setIsOpen(true)}
+          onFocus={(e) => { setIsOpen(true); e.target.select(); }}
           onBlur={handleBlur}
           onKeyDown={handleKeyDown}
           placeholder={placeholder}
