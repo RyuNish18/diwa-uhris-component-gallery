@@ -63,23 +63,7 @@ export function computeSelectPanelStyle(
 
 /**
  * Nearest *vertical* scroll container of `el`, used to bound the option panel.
- * In a Modal/Dialog this is the `overflow-y-auto` body, whose box sits between
- * the pinned header and footer — so clamping to it keeps the panel from crossing
- * either. Returns null when none is found (panel then bounds to the viewport).
- *
- * Note: an `overflow-x-auto` wrapper (e.g. a horizontally-scrolling table) also
- * reports computed `overflowY: 'auto'`, but it does NOT scroll vertically. We
- * must skip those — otherwise the panel would be clamped to that short wrapper
- * and clip. So require it to actually overflow vertically, unless overflow-y is
- * explicitly `scroll`.
+ * Re-exported from lib/utils so Select and Dropdown share one implementation.
+ * (Kept exported here for the existing select-panel-position unit tests.)
  */
-export function getScrollableAncestor(el: HTMLElement | null): HTMLElement | null {
-  let node = el?.parentElement ?? null;
-  while (node && node !== document.body && node !== document.documentElement) {
-    const oy = getComputedStyle(node).overflowY;
-    const scrollsVertically = node.scrollHeight > node.clientHeight;
-    if ((oy === 'scroll') || (/(auto|overlay)/.test(oy) && scrollsVertically)) return node;
-    node = node.parentElement;
-  }
-  return null;
-}
+export { getScrollableAncestor } from '../../../lib/utils';

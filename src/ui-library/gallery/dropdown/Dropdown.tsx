@@ -33,7 +33,12 @@
 
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { cn } from '../../../lib/utils';
+import { cn, getScrollableAncestor, getTopInsetAt } from '../../../lib/utils';
+import {
+  computeDropdownPlacement,
+  DROPDOWN_MARGIN,
+  DROPDOWN_MAX_HEIGHT,
+} from './dropdownPosition';
 
 export interface DropdownProps {
   /** Complete trigger content — icons, label, chevron — owned by consumer. */
@@ -83,36 +88,46 @@ export function Dropdown({
       setPositioned(false);
       return;
     }
-    const GAP = 4;
-    const MARGIN = 8;
+    const MARGIN = DROPDOWN_MARGIN;
     const updatePosition = () => {
       if (!triggerRef.current) return;
       const rect = triggerRef.current.getBoundingClientRect();
-      // If the trigger has scrolled out of the viewport, there's nothing to
-      // anchor to — keeping the panel open would strand it mid-screen, detached
-      // from its (now off-screen) trigger. Close instead.
-      if (rect.bottom <= 0 || rect.top >= window.innerHeight) {
+      // Vertical bounds: clamp to the nearest scrollable ancestor's visible box
+      // (its top sits BELOW a sticky app/modal header, its bottom ABOVE a footer)
+      // so the panel can't overlap those. Fall back to the viewport when there's
+      // no scroll container. Intersect with the viewport so an offscreen/oversized
+      // container can't push the panel off-screen.
+      const scroller = getScrollableAncestor(triggerRef.current);
+      const sr = scroller?.getBoundingClientRect();
+      // With a bounded scroll container, its visible top/bottom are the bounds.
+      // Without one (document-level scroll), fall back to the viewport but raise
+      // the top past any sticky/fixed app header pinned over the trigger's column,
+      // so the panel can't render under/over it.
+      const boundTop = Math.max(
+        0,
+        sr ? sr.top : getTopInsetAt(rect.left + rect.width / 2),
+      );
+      const boundBottom = Math.min(window.innerHeight, sr ? sr.bottom : window.innerHeight);
+      // If the trigger has scrolled out of the visible bounds, there's nothing to
+      // anchor to — keeping the panel open would strand it. Close instead.
+      if (rect.bottom <= boundTop || rect.top >= boundBottom) {
         onClose();
         return;
       }
-      // Measured once the panel has mounted; fall back to its max-height (280)
-      // on the very first pass before the ref is populated.
-      const panelHeight = panelRef.current?.offsetHeight ?? 280;
+      // scrollHeight = natural content height (ignores the maxHeight cap we set).
+      const naturalHeight = panelRef.current?.scrollHeight ?? DROPDOWN_MAX_HEIGHT;
       const panelWidth = panelRef.current?.offsetWidth ?? Math.max(rect.width, 180);
-      const spaceBelow = window.innerHeight - rect.bottom;
-      const spaceAbove = rect.top;
-      // Prefer below; flip above only when it doesn't fit below AND there's more room above.
-      const placeBelow = spaceBelow >= panelHeight + GAP + MARGIN || spaceBelow >= spaceAbove;
-      const top = placeBelow
-        ? Math.min(rect.bottom + GAP, window.innerHeight - panelHeight - MARGIN)
-        : Math.max(rect.top - panelHeight - GAP, MARGIN);
+      // Always anchored to the trigger (below, or flipped above); the panel shrinks
+      // to the space available instead of sliding over the trigger.
+      const { top, maxHeight } = computeDropdownPlacement(rect, boundTop, boundBottom, naturalHeight);
       const left = Math.max(
         MARGIN,
         Math.min(rect.left, window.innerWidth - panelWidth - MARGIN),
       );
       setPanelStyle({
         position: 'fixed',
-        top: Math.max(MARGIN, top),
+        top,
+        maxHeight,
         left,
         // Below the DatePicker calendar's z-index (1050 in ui.css) so a calendar
         // the panel spawns paints on top, but above normal page content.

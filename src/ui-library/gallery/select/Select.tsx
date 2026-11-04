@@ -23,7 +23,7 @@ import {
   FIELD_STATUS_RING_DIRECT,
   FIELD_HELPER_COLOR,
 } from '../shared/fieldStatus';
-import { cn, FLOATING_LAYER_ATTR } from '../../../lib/utils';
+import { cn, FLOATING_LAYER_ATTR, getTopInsetAt } from '../../../lib/utils';
 import { computeSelectPanelStyle, getScrollableAncestor } from './selectPosition';
 
 export type SelectStatus = FieldStatus;
@@ -167,7 +167,7 @@ export function Select({
         // viewport so an offscreen/oversized container can't push it off-screen.
         const scroller = getScrollableAncestor(wrapperRef.current);
         const cr = scroller?.getBoundingClientRect();
-        const boundTop = Math.max(0, cr ? cr.top : 0);
+        const boundTop = Math.max(0, cr ? cr.top : getTopInsetAt(rect.left + rect.width / 2));
         const boundBottom = Math.min(window.innerHeight, cr ? cr.bottom : window.innerHeight);
 
         // If the trigger has scrolled out of the container's visible area (behind
