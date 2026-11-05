@@ -267,6 +267,9 @@ export function Combobox({ value: controlledValue, defaultValue = '', onChange, 
           value={search}
           onChange={handleInputChange}
           onFocus={(e) => { setIsOpen(true); e.target.select(); }}
+          // Reopen (and reset filtering) when clicking an already-focused input —
+          // onFocus doesn't fire the second time, so the list would stay closed.
+          onClick={(e) => { setIsOpen(true); setTyped(false); e.currentTarget.select(); }}
           onBlur={handleBlur}
           onKeyDown={handleKeyDown}
           placeholder={placeholder}
