@@ -13,6 +13,7 @@ const { render, screen, fireEvent, act } = require('@testing-library/react');
 // Imported directly (not via the library index) so this suite doesn't load
 // unrelated components.
 const { OrgChart } = require('../src/ui-library/gallery/org-chart/OrgChart');
+const { layoutOrgChart } = require('../src/ui-library/gallery/org-chart/orgChartLayout');
 
 const nodes = () => [
   {
@@ -143,6 +144,17 @@ describe('OrgChart zoom', () => {
     expect(viewTransform(container)).toBe(fitted);
   });
 
+  test('minFitScale: a tree too wide to read opens at that zoom, top-centred on the root', () => {
+    const wide = [{ id: 'hq', label: 'HQ', children: Array.from({ length: 30 }, (_, i) => ({ id: `d${i}`, label: `D${i}`, expanded: false })) }];
+    const { container } = render(<OrgChart nodes={wide} minFitScale={0.6} />);
+    const t = parse(viewTransform(container));
+    expect(t.k).toBeCloseTo(0.6);
+    expect(t.x).toBeCloseTo(400); // the root (x = 0) sits at the middle of the 800px-wide chart
+    // A small tree still fits normally above the floor.
+    const { container: small } = render(<OrgChart nodes={nodes()} minFitScale={0.6} />);
+    expect(parse(viewTransform(small)).k).toBeGreaterThan(0.6);
+  });
+
   test('keyboard shortcuts zoom and fit', () => {
     const { container } = render(<OrgChart nodes={nodes()} />);
     const fitted = viewTransform(container);
@@ -151,6 +163,60 @@ describe('OrgChart zoom', () => {
     expect(parse(viewTransform(container)).k).toBeGreaterThan(parse(fitted).k);
     act(() => { fireEvent.keyDown(chart, { key: '0' }); });
     expect(viewTransform(container)).toBe(fitted);
+  });
+});
+
+describe('layoutOrgChart stackLeaves', () => {
+  // A head with one sub-unit and five childless reports, next to a wide sibling branch.
+  const tree = () => [{
+    id: 'hq', label: 'HQ', children: [
+      { id: 'head', label: 'Head', children: [
+        { id: 'r1', label: 'R1' }, { id: 'r2', label: 'R2' }, { id: 'sub', label: 'Sub', children: [{ id: 's1', label: 'S1' }] },
+        { id: 'r3', label: 'R3' }, { id: 'r4', label: 'R4' }, { id: 'r5', label: 'R5' },
+      ] },
+      { id: 'wide', label: 'Wide', children: [
+        { id: 'w', label: 'W', children: [{ id: 'w1', label: 'W1', children: [{ id: 'w2', label: 'W2' }] }] },
+      ] },
+    ],
+  }];
+  const byId = (placed) => Object.fromEntries(placed.map((p) => [p.data.originalId, p]));
+
+  test('without it, every leaf gets its own column', () => {
+    const at = byId(layoutOrgChart(tree()));
+    expect(new Set(['r1', 'r2', 'r3', 'r4', 'r5'].map((id) => at[id].x)).size).toBe(5);
+  });
+
+  test('stacks childless siblings in one column, in order, and links each to the one above', () => {
+    const placed = layoutOrgChart(tree(), true);
+    const at = byId(placed);
+    const column = ['r1', 'r2', 'r3', 'r4', 'r5'].map((id) => at[id]);
+    expect(new Set(column.map((p) => p.x)).size).toBe(1);
+    column.slice(1).forEach((p, i) => {
+      expect(p.y).toBeGreaterThan(column[i].y);
+      expect(p.stackPrev).toBe(column[i]);
+    });
+    // Every stacked card still reports to the head; no layout-only nodes are drawn.
+    column.forEach((p) => expect(p.parent).toBe(at.head));
+    expect(placed.map((p) => p.data.originalId).sort()).toEqual(
+      ['hq', 'head', 'r1', 'r2', 'r3', 'r4', 'r5', 'sub', 's1', 'wide', 'w', 'w1', 'w2'].sort(),
+    );
+  });
+
+  test('a collapsed node is not stacked: it has hidden children and keeps its own column', () => {
+    const placed = layoutOrgChart([{ id: 'hq', label: 'HQ', children: [
+      { id: 'a', label: 'A', expanded: false }, { id: 'b', label: 'B', expanded: false },
+    ] }], true);
+    const at = byId(placed);
+    expect(at.a.x).not.toBe(at.b.x);
+    expect(at.a.y).toBe(at.b.y);
+  });
+
+  test('no other card overlaps the stacked column', () => {
+    const placed = layoutOrgChart(tree(), true);
+    const overlaps = (a, b) => Math.abs(a.x - b.x) < 250 && Math.abs(a.y - b.y) < 84;
+    placed.forEach((a, i) => placed.slice(i + 1).forEach((b) => {
+      expect(overlaps(a, b)).toBe(false);
+    }));
   });
 });
 
@@ -201,6 +267,58 @@ describe('OrgChart nodes', () => {
     );
     expect(container.querySelectorAll('g.oc-node')).toHaveLength(2);
     expect(container.querySelectorAll('g.oc-links path')).toHaveLength(0);
+  });
+
+  test('vacant and filled tones are flagged on their nodes only', () => {
+    render(<OrgChart onSelect={() => {}} nodes={[{ id: 'u', label: 'Unit', children: [
+      { id: 'a', label: 'Open seat', tone: 'vacant' },
+      { id: 'b', label: 'Filled seat', tone: 'filled' },
+      { id: 'c', label: 'Plain' },
+    ] }]} />);
+    expect(screen.getByRole('button', { name: 'Open seat' })).toHaveClass('is-vacant');
+    expect(screen.getByRole('button', { name: 'Open seat' })).not.toHaveClass('is-filled');
+    expect(screen.getByRole('button', { name: 'Filled seat' })).toHaveClass('is-filled');
+    expect(screen.getByRole('button', { name: 'Filled seat' })).not.toHaveClass('is-vacant');
+    expect(screen.getByRole('button', { name: 'Plain' }).getAttribute('class')).toBe('oc-node');
+  });
+
+  test('the toggle button calls onToggle, not onSelect; Space on the node toggles too', () => {
+    const onSelect = jest.fn();
+    const onToggle = jest.fn();
+    const { container } = render(
+      <OrgChart onSelect={onSelect} onToggle={onToggle} nodes={[{ id: 'u', label: 'Unit', expanded: false }]} />,
+    );
+    const unit = screen.getByRole('button', { name: 'Unit' });
+    expect(unit).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(container.querySelector('g.oc-toggle'));
+    fireEvent.keyDown(unit, { key: ' ' });
+    expect(onToggle).toHaveBeenCalledTimes(2);
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  test('without onToggle there is no toggle and Space selects', () => {
+    const onSelect = jest.fn();
+    const { container } = render(<OrgChart onSelect={onSelect} nodes={[{ id: 'u', label: 'Unit', expanded: false }]} />);
+    expect(container.querySelector('g.oc-toggle').style.display).toBe('none');
+    fireEvent.keyDown(screen.getByRole('button', { name: 'Unit' }), { key: ' ' });
+    expect(onSelect).toHaveBeenCalledWith('u');
+  });
+
+  test('one Tab stop; arrow keys move it between parent, child and siblings', () => {
+    render(<OrgChart nodes={nodes()} onSelect={() => {}} />);
+    const button = (name) => screen.getByRole('button', { name: new RegExp(`^${name}`) });
+    expect(button('Acme').getAttribute('tabindex')).toBe('0');
+    expect(button('Engineering').getAttribute('tabindex')).toBe('-1');
+
+    act(() => { button('Acme').focus(); });
+    fireEvent.keyDown(button('Acme'), { key: 'ArrowDown' });
+    expect(document.activeElement).toBe(button('Engineering'));
+    fireEvent.keyDown(button('Engineering'), { key: 'ArrowRight' });
+    expect(document.activeElement).toBe(button('Operations'));
+    expect(button('Operations').getAttribute('tabindex')).toBe('0');
+    expect(button('Engineering').getAttribute('tabindex')).toBe('-1');
+    fireEvent.keyDown(button('Operations'), { key: 'ArrowUp' });
+    expect(document.activeElement).toBe(button('Acme'));
   });
 
   test('an empty tree shows a message instead of a blank canvas', () => {

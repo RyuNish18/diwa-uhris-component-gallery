@@ -14,6 +14,10 @@
  *     - Root (depth 0) or `emphasis`: dark navy fill (#0f172a), white text
  *     - Children: white fill (#fff), slate border (#e2e8f0)
  *     - Muted tone: dashed border, slate-50 fill, muted text (inactive units)
+ *     - Vacant tone: flat slate-100 card without shadow (unfilled positions)
+ *     - Filled tone: white card with a 1.5px brand-blue (#034EA2) border, no shadow (held positions)
+ *     - `expanded`: +/− button on the bottom edge; `onToggle` owns the state
+ *     - `stackLeaves`: childless siblings hang in one column under their parent
  *     - drop-shadow: 0 6px 12px rgba(15,23,42,0.08)
  *     - Name: 13px, font-weight 800, centered, ellipsis + tooltip when too long
  *     - Description: 11px, font-weight 600, #64748b / #cbd5e1 (root)
@@ -34,7 +38,9 @@
  *
  * Accessibility:
  *   - SVG has an aria-label; role="img" when read-only, role="group" when nodes are selectable
- *   - Selectable nodes are focusable buttons (Tab, Enter / Space to select)
+ *   - Selectable nodes are buttons with one Tab stop (roving tabindex):
+ *     arrow keys move parent / child / sibling, Enter selects, Space toggles
+ *     a node with `expanded` (else selects)
  *   - Keyboard on the chart: + / = zoom in, - zoom out, 0 fit to screen
  *   - Respects prefers-reduced-motion for button zoom transitions
  *   - Note: full ARIA tree semantics are not possible in an SVG diagram;
@@ -52,6 +58,7 @@
 import * as d3 from 'd3';
 import { useEffect, useRef, useId, useState, type KeyboardEvent } from 'react';
 import { Scan, ZoomIn, ZoomOut } from 'lucide-react';
+import { layoutOrgChart, NODE_H, NODE_W, type PlacedNode } from './orgChartLayout';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -64,14 +71,22 @@ export interface OrgChartNode {
   description?: string;
   /**
    * Visual tone. `'muted'` renders a dashed, greyed-out card — use it for
-   * inactive or archived units. Default: `'default'`.
+   * inactive or archived units. `'vacant'` renders a flat grey card — use it
+   * for an unfilled position. `'filled'` renders a white card with a brand-blue
+   * border — use it for a position someone holds. Default: `'default'`.
    */
-  tone?: 'default' | 'muted';
+  tone?: 'default' | 'muted' | 'vacant' | 'filled';
   /**
    * Draws the card in the root's dark style, e.g. to set org units apart
    * from positions. Combines with `tone: 'muted'`. Default: `false`.
    */
   emphasis?: boolean;
+  /**
+   * Shows an expand / collapse button under the card: `true` = expanded,
+   * `false` = collapsed. Leave it out for nodes that can't toggle. The
+   * consumer owns the state: handle `onToggle` and pass new `children`.
+   */
+  expanded?: boolean;
   /** Child nodes. */
   children?: OrgChartNode[];
 }
@@ -85,8 +100,22 @@ export interface OrgChartProps {
   nodes: OrgChartNode[];
   /** Currently selected node id — renders an indigo ring on the node. */
   selectedId?: string;
-  /** Called when a node is clicked (or activated with Enter / Space). */
+  /** Called when a node is clicked (or activated with Enter, or Space on a node without `expanded`). */
   onSelect?: (id: string) => void;
+  /** Called when a node's expand / collapse button is clicked, or Space is pressed on it. */
+  onToggle?: (id: string) => void;
+  /**
+   * Hang a node's childless children in one column under it instead of a
+   * wide row (two or more of them). Keeps big flat teams readable.
+   */
+  stackLeaves?: boolean;
+  /**
+   * The smallest zoom an automatic fit may use. When the whole tree would
+   * only fit below it, the chart opens at this zoom with the top of the tree
+   * in view, centred on the root, instead of shrinking past readability.
+   * Default: no minimum beyond the zoom range.
+   */
+  minFitScale?: number;
   /**
    * Changing this value re-fits the tree to the viewport, discarding the
    * user's zoom/pan. Use it when the chart shows a new context (e.g. a
@@ -104,61 +133,11 @@ export interface OrgChartProps {
   className?: string;
 }
 
-// ── Internal D3 node data ─────────────────────────────────────────────────────
-
-interface D3NodeDatum {
-  id: string;
-  name: string;
-  description: string;
-  isRoot: boolean;
-  isSyntheticRoot: boolean;
-  isMuted: boolean;
-  originalId: string;
-  children?: D3NodeDatum[];
-}
-
-type PointNode = d3.HierarchyPointNode<D3NodeDatum>;
-type PointLink = d3.HierarchyPointLink<D3NodeDatum>;
-
-const SYNTHETIC_ROOT_ID = '__synthetic_root__';
-const NODE_W = 250;
-const NODE_H = 84;
 const TEXT_MAX_W = NODE_W - 32;
 const MIN_SCALE = 0.05;
 const MAX_SCALE = 1.8;
 const FIT_PAD = 40;
 const BUTTON_ZOOM_STEP = 1.2;
-
-function buildD3Tree(nodes: OrgChartNode[]): D3NodeDatum {
-  function convert(node: OrgChartNode, depth: number): D3NodeDatum {
-    return {
-      id: node.id,
-      name: node.label,
-      description: node.description ?? '',
-      isRoot: depth === 0 || Boolean(node.emphasis),
-      isSyntheticRoot: false,
-      isMuted: node.tone === 'muted',
-      originalId: node.id,
-      children: node.children?.map((c) => convert(c, depth + 1)),
-    };
-  }
-
-  if (nodes.length === 1) {
-    return convert(nodes[0]!, 0);
-  }
-
-  // Multiple roots: wrap in a transparent synthetic root
-  return {
-    id: SYNTHETIC_ROOT_ID,
-    name: '',
-    description: '',
-    isRoot: true,
-    isSyntheticRoot: true,
-    isMuted: false,
-    originalId: SYNTHETIC_ROOT_ID,
-    children: nodes.map((n) => convert(n, 0)),
-  };
-}
 
 /** Writes `text` into an SVG text element, truncating with an ellipsis to fit `maxWidth`. */
 function fitText(el: SVGTextElement, text: string, maxWidth: number, fontSize: number) {
@@ -196,6 +175,9 @@ export function OrgChart({
   nodes,
   selectedId,
   onSelect,
+  onToggle,
+  stackLeaves = false,
+  minFitScale = MIN_SCALE,
   fitKey,
   height = '75vh',
   'aria-label': ariaLabel = 'Organization chart',
@@ -203,8 +185,9 @@ export function OrgChart({
 }: OrgChartProps) {
   const svgRef  = useRef<SVGSVGElement>(null);
   const zoomRef = useRef<d3.ZoomBehavior<SVGSVGElement, unknown> | null>(null);
-  // Tree coordinate bounds, so fitToView() can recalculate on resize.
-  const treeBoundsRef = useRef<{ minX: number; maxX: number; minY: number; maxY: number } | null>(null);
+  // Tree coordinate bounds, so fitToView() can recalculate on resize; rootX centres a clamped fit.
+  const treeBoundsRef = useRef<{ minX: number; maxX: number; minY: number; maxY: number; rootX: number } | null>(null);
+  const minFitScaleRef = useRef(minFitScale);
   // True until the user zooms or pans; while true the chart keeps itself fitted.
   const autoFitRef = useRef(true);
   // Set while the chart moves the view itself, so those zoom events don't count as the user's.
@@ -213,12 +196,16 @@ export function OrgChart({
   const pendingFitRef = useRef(false);
   const lastSizeRef = useRef<{ width: number; height: number } | null>(null);
   const onSelectRef = useRef(onSelect);
+  const onToggleRef = useRef(onToggle);
   const selectedIdRef = useRef(selectedId);
+  // The one node in the Tab order; arrow keys move it (roving tabindex).
+  const activeIdRef = useRef<string | undefined>(undefined);
   const scaleFrameRef = useRef(0);
   const [scale, setScale] = useState(1);
   // Used as a CSS id selector, so strip the characters React puts in useId values.
   const uid = `oc-${useId().replace(/[^a-zA-Z0-9_-]/g, '')}`;
   const interactive = Boolean(onSelect);
+  const togglable = Boolean(onToggle);
   const isEmpty = nodes.length === 0;
 
   const getSize = () => {
@@ -251,7 +238,7 @@ export function OrgChart({
     }
     pendingFitRef.current = false;
 
-    const { minX, maxX, minY, maxY } = treeBoundsRef.current;
+    const { minX, maxX, minY, maxY, rootX } = treeBoundsRef.current;
 
     // Visual bounds of the tree content (nodes are centered at their coords).
     const contentLeft   = minX - NODE_W / 2;
@@ -264,13 +251,22 @@ export function OrgChart({
     // Scale to fill the viewport with padding, clamped to the zoom extent.
     const scaleX = (W - FIT_PAD * 2) / Math.max(1, contentWidth);
     const scaleY = (H - FIT_PAD * 2) / Math.max(1, contentHeight);
-    const k = Math.max(MIN_SCALE, Math.min(MAX_SCALE, scaleX, scaleY));
+    const fit = Math.min(MAX_SCALE, scaleX, scaleY);
+    const floor = Math.max(MIN_SCALE, minFitScaleRef.current);
+
+    if (fit < floor) {
+      // Too big to read whole: open at the floor zoom, top of the tree in view, centred on the root.
+      const tx = W / 2 - rootX * floor;
+      const ty = FIT_PAD - contentTop * floor;
+      applyTransform(d3.zoomIdentity.translate(tx, ty).scale(floor));
+      return;
+    }
 
     // Translate so the content's visual center lands at the viewport center.
-    const tx = W / 2 - ((contentLeft + contentRight) / 2) * k;
-    const ty = H / 2 - ((contentTop + contentBottom) / 2) * k;
+    const tx = W / 2 - ((contentLeft + contentRight) / 2) * fit;
+    const ty = H / 2 - ((contentTop + contentBottom) / 2) * fit;
 
-    applyTransform(d3.zoomIdentity.translate(tx, ty).scale(k));
+    applyTransform(d3.zoomIdentity.translate(tx, ty).scale(fit));
   };
 
   /** Fit, and go back to keeping the chart fitted (Fit button, new fitKey). */
@@ -293,7 +289,32 @@ export function OrgChart({
   // Latest callback / selection, read by D3 handlers without redrawing.
   useEffect(() => {
     onSelectRef.current = onSelect;
-  }, [onSelect]);
+    onToggleRef.current = onToggle;
+    // Declared before the draw effect, so a fit in the same commit reads the new value.
+    minFitScaleRef.current = minFitScale;
+  }, [onSelect, onToggle, minFitScale]);
+
+  const nodeSelection = () =>
+    d3.select(svgRef.current).selectAll<SVGGElement, PlacedNode>('g.oc-node');
+
+  /** Puts exactly one node in the Tab order: the active one, else the selected one, else the first. */
+  const syncTabStops = () => {
+    const all = nodeSelection();
+    if (!interactive) {
+      all.attr('tabindex', null);
+      return;
+    }
+    const ids = new Set(all.data().map((d) => d.data.originalId));
+    const active = [activeIdRef.current, selectedIdRef.current].find((id) => id && ids.has(id)) ?? all.data()[0]?.data.originalId;
+    activeIdRef.current = active;
+    all.attr('tabindex', (d) => (d.data.originalId === active ? 0 : -1));
+  };
+
+  const focusNode = (target: PlacedNode) => {
+    activeIdRef.current = target.data.originalId;
+    syncTabStops();
+    nodeSelection().filter((d) => d === target).node()?.focus();
+  };
 
   // ── Mount: zoom behavior, layers, resize handling (once) ────────────────────
   useEffect(() => {
@@ -374,38 +395,48 @@ export function OrgChart({
       return;
     }
 
-    const root = d3.hierarchy(buildD3Tree(nodes));
-    // Layout — matches production exactly: nodeSize([280, 185])
-    const pointRoot = d3.tree<D3NodeDatum>().nodeSize([280, 185])(root);
-
-    const descendants = pointRoot.descendants();
+    const placed = layoutOrgChart(nodes, stackLeaves);
+    const roots = placed.filter((d) => !d.parent);
     treeBoundsRef.current = {
-      minX: d3.min(descendants, (d) => d.x) ?? 0,
-      maxX: d3.max(descendants, (d) => d.x) ?? 0,
-      minY: d3.min(descendants, (d) => d.y) ?? 0,
-      maxY: d3.max(descendants, (d) => d.y) ?? 0,
+      minX: d3.min(placed, (d) => d.x) ?? 0,
+      maxX: d3.max(placed, (d) => d.x) ?? 0,
+      minY: d3.min(placed, (d) => d.y) ?? 0,
+      maxY: d3.max(placed, (d) => d.y) ?? 0,
+      rootX: d3.mean(roots, (d) => d.x) ?? 0,
     };
 
     // ── Connectors ──────────────────────────────────────────────────────────
     linkLayer
-      .selectAll<SVGPathElement, PointLink>('path')
-      .data(
-        pointRoot.links().filter((l) => !l.source.data.isSyntheticRoot),
-        (l) => `${l.source.data.originalId}>${l.target.data.originalId}`,
-      )
+      .selectAll<SVGPathElement, PlacedNode>('path')
+      .data(placed.filter((d) => d.parent), (d) => `${d.parent!.data.originalId}>${d.data.originalId}`)
       .join('path')
       .attr('fill', 'none')
       .attr('stroke', '#cbd5e1')
       .attr('stroke-width', 1.5)
-      .attr('d', (link) => {
-        const mid = (link.source.y + link.target.y) / 2;
-        return `M${link.source.x},${link.source.y}V${mid}H${link.target.x}V${link.target.y}`;
+      .attr('d', (d) => {
+        // A stacked card hangs from the one above it; the line runs behind the cards.
+        if (d.stackPrev) return `M${d.x},${d.stackPrev.y}V${d.y}`;
+        const from = d.parent!;
+        const mid = (from.y + d.y) / 2;
+        return `M${from.x},${from.y}V${mid}H${d.x}V${d.y}`;
       });
+
+    /** The node an arrow key moves to: null when there is none, undefined for other keys. */
+    const neighbour = (d: PlacedNode, key: string): PlacedNode | null | undefined => {
+      const siblings = d.parent ? d.parent.children : roots;
+      const index = siblings.indexOf(d);
+      if (key === 'ArrowUp') return d.stackPrev ?? d.parent;
+      if (key === 'ArrowDown') return d.stackNext ?? d.children[0] ?? null;
+      if (key === 'ArrowLeft') return siblings[index - 1] ?? null;
+      if (key === 'ArrowRight') return siblings[index + 1] ?? null;
+      return undefined;
+    };
+    const canToggle = (d: PlacedNode) => d.data.expanded !== undefined && Boolean(onToggleRef.current);
 
     // ── Nodes ────────────────────────────────────────────────────────────────
     const node = nodeLayer
-      .selectAll<SVGGElement, PointNode>('g.oc-node')
-      .data(descendants.filter((d) => !d.data.isSyntheticRoot), (d) => d.data.originalId)
+      .selectAll<SVGGElement, PlacedNode>('g.oc-node')
+      .data(placed, (d) => d.data.originalId)
       .join((enter) => {
         const g = enter.append('g').attr('class', 'oc-node');
         g.append('title');
@@ -427,20 +458,36 @@ export function OrgChart({
           .attr('fill', 'none');
         g.append('text').attr('class', 'oc-name').attr('text-anchor', 'middle').attr('y', -8).attr('font-size', 13).attr('font-weight', 800);
         g.append('text').attr('class', 'oc-desc').attr('text-anchor', 'middle').attr('y', 16).attr('font-size', 11).attr('font-weight', 600);
+        // Mouse affordance only; keyboard users toggle with Space on the node.
+        const toggle = g.append('g').attr('class', 'oc-toggle').attr('aria-hidden', 'true').attr('transform', `translate(0,${NODE_H / 2})`);
+        toggle.append('circle').attr('r', 11);
+        toggle.append('text').attr('text-anchor', 'middle').attr('dy', '0.35em');
         return g;
       })
       .attr('transform', (d) => `translate(${d.x},${d.y})`)
       .classed('is-root', (d) => d.data.isRoot)
       .classed('is-muted', (d) => d.data.isMuted)
+      .classed('is-vacant', (d) => Boolean(d.data.isVacant) && !d.data.isMuted)
+      .classed('is-filled', (d) => Boolean(d.data.isFilled))
       .classed('is-selected', (d) => d.data.originalId === selectedIdRef.current)
       .attr('aria-label', (d) => (d.data.description ? `${d.data.name}, ${d.data.description}` : d.data.name))
+      .attr('aria-expanded', (d) => (canToggle(d) ? String(d.data.expanded) : null))
       .on('click', (_e, d) => onSelectRef.current?.(d.data.originalId))
       .on('keydown', (event: globalThis.KeyboardEvent, d) => {
-        if (event.key !== 'Enter' && event.key !== ' ') return;
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          if (event.key === ' ' && canToggle(d)) onToggleRef.current?.(d.data.originalId);
+          else onSelectRef.current?.(d.data.originalId);
+          return;
+        }
+        const next = neighbour(d, event.key);
+        if (next === undefined) return;
         event.preventDefault();
-        onSelectRef.current?.(d.data.originalId);
+        if (next) focusNode(next);
       })
       .on('focus', (_e, d) => {
+        activeIdRef.current = d.data.originalId;
+        syncTabStops();
         // Keyboard users tabbing to an off-screen node: bring it into view.
         if (!zoomRef.current) return;
         const { width: W, height: H } = getSize();
@@ -458,29 +505,42 @@ export function OrgChart({
     node.select<SVGTextElement>('text.oc-desc').each(function (d) {
       fitText(this, d.data.description, TEXT_MAX_W, 11);
     });
+    const toggle = node.select<SVGGElement>('g.oc-toggle')
+      .style('display', (d) => (canToggle(d) ? null : 'none'))
+      .on('click', (event: MouseEvent, d) => {
+        event.stopPropagation(); // toggling is not selecting
+        onToggleRef.current?.(d.data.originalId);
+      });
+    toggle.select('text').text((d) => (d.data.expanded ? '−' : '+'));
 
     if (autoFitRef.current || pendingFitRef.current) fitToView();
     // fitToView reads refs only.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [nodes]);
+  }, [nodes, stackLeaves, togglable]);
 
   // Focusability / button semantics follow whether nodes are selectable.
   useEffect(() => {
     if (!svgRef.current) return;
-    d3.select(svgRef.current)
-      .selectAll('g.oc-node')
-      .attr('tabindex', interactive ? 0 : null)
-      .attr('role', interactive ? 'button' : null);
-  }, [interactive, nodes]);
+    nodeSelection().attr('role', interactive ? 'button' : null);
+    syncTabStops();
+    // syncTabStops reads refs only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [interactive, nodes, stackLeaves]);
 
   // ── Selection: restyle in place, never redraw or refit ──────────────────────
   useEffect(() => {
     selectedIdRef.current = selectedId;
     if (!svgRef.current) return;
-    d3.select(svgRef.current)
-      .selectAll<SVGGElement, PointNode>('g.oc-node')
+    nodeSelection()
       .classed('is-selected', (d) => d.data.originalId === selectedId)
       .attr('aria-pressed', interactive ? (d) => String(d.data.originalId === selectedId) : null);
+    // A new selection (e.g. from search) becomes the Tab stop.
+    if (selectedId) {
+      activeIdRef.current = selectedId;
+      syncTabStops();
+    }
+    // syncTabStops reads refs only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId, interactive, nodes]);
 
   // ── fitKey: a new context hands the view back to auto-fit ───────────────────
@@ -534,6 +594,14 @@ export function OrgChart({
         #${uid} .oc-node.is-root.is-muted .oc-card { fill: #334155; stroke: #94a3b8; }
         #${uid} .oc-node.is-root.is-muted .oc-name { fill: #e2e8f0; }
         #${uid} .oc-node.is-root.is-muted .oc-desc { fill: #cbd5e1; }
+        #${uid} .oc-node.is-vacant .oc-card { fill: #f1f5f9; stroke: #cbd5e1; filter: none; }
+        #${uid} .oc-node.is-vacant .oc-name { fill: #334155; }
+        #${uid} .oc-node.is-vacant .oc-desc { fill: #475569; }
+        #${uid} .oc-node.is-filled .oc-card { stroke: #034ea2; stroke-width: 1.5; filter: none; }
+        #${uid} .oc-toggle { cursor: pointer; }
+        #${uid} .oc-toggle circle { fill: #fff; stroke: #94a3b8; stroke-width: 1; transition: stroke 120ms ease; }
+        #${uid} .oc-toggle text { fill: #334155; font-size: 15px; font-weight: 700; pointer-events: none; }
+        #${uid} .oc-toggle:hover circle { stroke: #6366f1; stroke-width: 1.5; }
         #${uid} .oc-ring { stroke: #6366f1; stroke-width: 2.5; opacity: 0; pointer-events: none; }
         #${uid}.is-interactive .oc-node { cursor: pointer; }
         #${uid}.is-interactive .oc-node:hover .oc-card { stroke: #a5b4fc; stroke-width: 1.5; }
@@ -598,7 +666,13 @@ export function OrgChart({
         className={`block touch-none ${interactive ? 'is-interactive' : ''}`}
         role={interactive ? 'group' : 'img'}
         aria-label={ariaLabel}
+        aria-describedby={interactive ? `${uid}-help` : undefined}
       />
+      {interactive && (
+        <p id={`${uid}-help`} className="sr-only">
+          Arrow keys move between boxes. Enter opens a box.{togglable ? ' Space expands or collapses it.' : ''}
+        </p>
+      )}
     </div>
   );
 }

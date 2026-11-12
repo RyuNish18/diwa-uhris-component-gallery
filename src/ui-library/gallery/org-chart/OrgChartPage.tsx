@@ -312,7 +312,10 @@ export default function OrgChartPage() {
           <ApiTable props={[
             { name: 'nodes',      type: 'OrgChartNode[]', required: true, description: 'Root nodes. A single root produces a standard org chart. Multiple roots share an invisible synthetic parent.' },
             { name: 'selectedId', type: 'string',                        description: 'Selected node id — renders an indigo ring on the matching node.' },
-            { name: 'onSelect',   type: '(id: string) => void',          description: 'Called when a node is clicked.' },
+            { name: 'onSelect',   type: '(id: string) => void',          description: 'Called when a node is clicked, or Enter is pressed on it.' },
+            { name: 'onToggle',   type: '(id: string) => void',          description: "Called when a node's +/− button is clicked, or Space is pressed on a node with expanded set." },
+            { name: 'stackLeaves', type: 'boolean', default: 'false',    description: 'Hangs two or more childless siblings in one column under their parent instead of a wide row. Collapsed nodes (expanded: false) keep their own column.' },
+            { name: 'minFitScale', type: 'number',  default: '0.05',     description: 'Smallest zoom an automatic fit may use. A tree that would only fit below it opens at this zoom, top-centred on the root.' },
             { name: 'height',     type: 'string', default: "'75vh'",      description: 'Container height. Use a fixed value in demos: "480px".' },
             { name: 'aria-label', type: 'string', default: '"Organization chart"', description: 'Accessible label for the SVG role="img" element.' },
             { name: 'className',  type: 'string',                        description: 'Additional class on the root container div.' },
@@ -323,8 +326,9 @@ export default function OrgChartPage() {
             { name: 'id',          type: 'string',         required: true, description: 'Unique identifier.' },
             { name: 'label',       type: 'string',         required: true, description: 'Primary text rendered in the node (name line).' },
             { name: 'description', type: 'string',                        description: 'Secondary text line below the label.' },
-            { name: 'tone',        type: "'default' | 'muted'", default: "'default'", description: 'Muted renders a dashed, greyed-out card for inactive or archived nodes.' },
+            { name: 'tone',        type: "'default' | 'muted' | 'vacant' | 'filled'", default: "'default'", description: 'Muted renders a dashed, greyed-out card for inactive or archived nodes. Vacant renders a flat grey card for an unfilled position. Filled renders a white card with a brand-blue border for a position someone holds.' },
             { name: 'emphasis',    type: 'boolean',        default: 'false', description: "Draws the card in the root's dark style, e.g. to set org units apart from positions. Combines with tone." },
+            { name: 'expanded',    type: 'boolean',                       description: 'Shows a +/− button on the card (true = expanded). Leave out for nodes that cannot toggle. You own the state: handle onToggle and pass new children.' },
             { name: 'children',    type: 'OrgChartNode[]',                description: 'Child nodes.' },
           ]} />
 
