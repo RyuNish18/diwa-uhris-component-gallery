@@ -323,6 +323,8 @@ export default function OrgChartPage() {
             { name: 'id',          type: 'string',         required: true, description: 'Unique identifier.' },
             { name: 'label',       type: 'string',         required: true, description: 'Primary text rendered in the node (name line).' },
             { name: 'description', type: 'string',                        description: 'Secondary text line below the label.' },
+            { name: 'tone',        type: "'default' | 'muted'", default: "'default'", description: 'Muted renders a dashed, greyed-out card for inactive or archived nodes.' },
+            { name: 'emphasis',    type: 'boolean',        default: 'false', description: "Draws the card in the root's dark style, e.g. to set org units apart from positions. Combines with tone." },
             { name: 'children',    type: 'OrgChartNode[]',                description: 'Child nodes.' },
           ]} />
 

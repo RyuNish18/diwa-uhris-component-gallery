@@ -11,7 +11,7 @@
  * Visual design (sourced from CompanyStructurePage diagram mode):
  *   Nodes:
  *     - 250 × 84 px rounded rectangles (rx=14)
- *     - Root (depth 0): dark navy fill (#0f172a), white text
+ *     - Root (depth 0) or `emphasis`: dark navy fill (#0f172a), white text
  *     - Children: white fill (#fff), slate border (#e2e8f0)
  *     - Muted tone: dashed border, slate-50 fill, muted text (inactive units)
  *     - drop-shadow: 0 6px 12px rgba(15,23,42,0.08)
@@ -67,6 +67,11 @@ export interface OrgChartNode {
    * inactive or archived units. Default: `'default'`.
    */
   tone?: 'default' | 'muted';
+  /**
+   * Draws the card in the root's dark style, e.g. to set org units apart
+   * from positions. Combines with `tone: 'muted'`. Default: `false`.
+   */
+  emphasis?: boolean;
   /** Child nodes. */
   children?: OrgChartNode[];
 }
@@ -130,7 +135,7 @@ function buildD3Tree(nodes: OrgChartNode[]): D3NodeDatum {
       id: node.id,
       name: node.label,
       description: node.description ?? '',
-      isRoot: depth === 0,
+      isRoot: depth === 0 || Boolean(node.emphasis),
       isSyntheticRoot: false,
       isMuted: node.tone === 'muted',
       originalId: node.id,
