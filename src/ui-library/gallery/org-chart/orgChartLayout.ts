@@ -243,10 +243,32 @@ function buildTierBlocks(node: D3NodeDatum, tierMaxPerRow: number) {
     tierItems,
     cols: maxCols,
     originalId: id,
-    children: makeSpacers(id, reach, maxCols),
+    children: makeSpacers(id, reach, 1),
   };
 
   replaceWithBlock(node, tierLeaves, block);
+
+  // Add maxCols-1 phantom siblings so D3 reserves the full horizontal width.
+  if (maxCols > 1) {
+    const updatedKids = node.children!;
+    const blockIdx = updatedKids.indexOf(block);
+    const phantoms: D3NodeDatum[] = [];
+    for (let i = 1; i < maxCols; i++) {
+      const phantomId = `${id}\u0000phantom${i}`;
+      phantoms.push({
+        id: phantomId,
+        name: '',
+        description: '',
+        isRoot: false,
+        isSyntheticRoot: false,
+        isMuted: false,
+        isSpacer: true,
+        originalId: phantomId,
+        children: makeSpacers(phantomId, reach, 1),
+      });
+    }
+    updatedKids.splice(blockIdx + 1, 0, ...phantoms);
+  }
 }
 
 /**
@@ -296,11 +318,13 @@ export function layoutOrgChart(nodes: OrgChartNode[], stackLeaves = false, tierM
     }
 
     if (d.data.tierItems) {
-      // Place all cards in the tier block at their computed positions.
+      // The stand-in sits at column 0; the block centre is shifted right.
+      const cols = d.data.cols ?? 1;
+      const blockCenterX = d.x + (cols - 1) / 2 * COL_GAP;
       d.data.tierItems.forEach(({ data, slot }) => {
-        add(data, d.x + slot.dx, d.y + slot.dy, {
+        add(data, blockCenterX + slot.dx, d.y + slot.dy, {
           row: slot.row,
-          blockX: d.x,
+          blockX: blockCenterX,
           blockY: d.y,
           ...(slot.label !== undefined ? { label: slot.label } : {}),
         });

@@ -440,8 +440,8 @@ export function OrgChart({
           if (d.tier.row === 0 && d.tier.label !== undefined) {
             return `M${from.x},${from.y}V${busY}H${d.x}V${d.y}`;
           }
-          // All other tier cards branch from the block's x-axis at the bus level.
-          return `M${d.tier.blockX},${busY}H${d.x}V${d.y}`;
+          // All other cards branch from the parent's x-axis at the bus level.
+          return `M${from.x},${busY}H${d.x}V${d.y}`;
         }
         const mid = (from.y + d.y) / 2;
         return `M${from.x},${from.y}V${mid}H${d.x}V${d.y}`;
@@ -454,7 +454,7 @@ export function OrgChart({
       .data(placed.filter((d) => d.tier?.label !== undefined), (d) => `tl-${d.data.originalId}`)
       .join('text')
       .attr('class', 'oc-tier-label')
-      .attr('x', (d) => d.x)
+      .attr('x', (d) => d.tier!.blockX)
       .attr('y', (d) => d.y - NODE_H / 2 - 7)
       .attr('text-anchor', 'middle')
       .text((d) => d.tier!.label!);
