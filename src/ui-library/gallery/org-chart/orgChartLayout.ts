@@ -39,8 +39,30 @@ export interface TierSlot {
   dy: number;
   /** Row index across the whole block (tiers wrap onto several rows). */
   row: number;
+  /** Column index within the row, left-most = 0. */
+  col: number;
   /** Set on the first card of a tier's first row: the tier's heading. */
   label?: string;
+}
+
+/** Geometry of one card laid out in a tier block, in chart coordinates. */
+export interface PlacedTier {
+  /** Row index across the whole block, top row = 0. */
+  row: number;
+  /** Column index within the row, left-most = 0. */
+  col: number;
+  /** Centre x and top-row y of the whole block. */
+  blockX: number;
+  blockY: number;
+  /** x of the block's vertical connector spine, in the gutter left of the cards. */
+  spineX: number;
+  /** y of the horizontal connector bus above this card's row. */
+  busY: number;
+  /** Heading drawn above the first row of a tier (first card only). */
+  label?: string;
+  /** Left edge x of the heading and the widest it may be drawn. */
+  labelX: number;
+  labelMaxWidth: number;
 }
 
 /** A drawn node with its final position and its neighbours for keyboard moves. */
@@ -54,19 +76,25 @@ export interface PlacedNode {
   stackPrev?: PlacedNode;
   stackNext?: PlacedNode;
   /** Present on cards laid out in rank tiers. */
-  tier?: { row: number; blockX: number; blockY: number; label?: string };
+  tier?: PlacedTier;
 }
 
 export const SYNTHETIC_ROOT_ID = '__synthetic_root__';
 export const NODE_W = 250;
 export const NODE_H = 84;
-const COL_GAP = 280;
+export const COL_GAP = 280;
 const LEVEL_GAP = 185;
 const STACK_GAP = NODE_H + 16;
-/** Vertical distance between tier rows: card height plus room for the connector bus. */
-export const TIER_ROW_GAP = NODE_H + 48;
+/** Vertical distance between tier rows: card height plus room for a heading and the connector bus. */
+export const TIER_ROW_GAP = NODE_H + 56;
 /** Most cards in one tier row before it wraps onto the next row. */
 export const TIER_MAX_PER_ROW = 4;
+/** Extra width on the left of a tier block for its connector spine. */
+const TIER_GUTTER = 40;
+/** Spine distance from the left edge of the block's first card column. */
+const TIER_SPINE_INSET = 20;
+/** Bus distance above the top edge of a row's cards. */
+const TIER_BUS_OFFSET = 26;
 
 function buildD3Tree(nodes: OrgChartNode[]): D3NodeDatum {
   function convert(node: OrgChartNode, depth: number): D3NodeDatum {
@@ -133,10 +161,10 @@ function stackLeafChildren(node: D3NodeDatum) {
   if (!kids?.length) return;
   kids.forEach(stackLeafChildren);
   // A collapsed node hides children, so it is not a leaf: it keeps its own column.
-  // A tier block is already laid out in rows.
-  const leaves = kids.filter((kid) => !kid.children?.length && kid.expanded === undefined && !kid.tierItems);
+  // A tier block is already laid out in rows, and a spacer only holds a slot: neither is a card.
+  const leaves = kids.filter((kid) => !kid.children?.length && kid.expanded === undefined && !kid.tierItems && !kid.isSpacer);
   if (leaves.length < 2) return;
-  const reach = (leaves.length - 1) * STACK_GAP + NODE_H;
+  const reach = (leaves.length - 1) * STACK_GAP + NODE_H + 16;
   const id = `${node.id}\u0000stack`;
   const stack: D3NodeDatum = { id, name: '', description: '', isRoot: false, isSyntheticRoot: false, isMuted: false, stackItems: leaves, originalId: id, children: makeSpacers(node.id, reach, 1) };
   replaceWithBlock(node, leaves, stack);
@@ -144,93 +172,92 @@ function stackLeafChildren(node: D3NodeDatum) {
 
 // -- Rank tiers ---------------------------------------------------------------
 
+/** Balanced row sizes for `count` cards, at most `perRow` a row (10 / 4 -> 4, 3, 3). */
+function balancedRows(count: number, perRow: number): number[] {
+  const numRows = Math.max(1, Math.ceil(count / perRow));
+  const base = Math.floor(count / numRows);
+  const extra = count % numRows;
+  return Array.from({ length: numRows }, (_, i) => (i < extra ? base + 1 : base));
+}
+
 /**
  * Pure geometry of a tier block. `tiers` lists each tier's heading and card
  * count, top tier first. Every tier starts on a new row, and a tier with more
  * than `maxPerRow` cards wraps onto balanced rows (10 cards -> 4 + 3 + 3, never
- * 4 + 4 + 2). Cards are centred on the block's x; the first row is at dy 0.
+ * 4 + 4 + 2). Rows are left-aligned behind a gutter that holds the connector
+ * spine, so each tier reads as one line under its heading.
+ *
+ * `width` is the whole block (gutter included) and `cols` the number of card
+ * columns. Slot `dx` is relative to the block's centre; the first row is at dy 0.
  */
 export function tierBlockGeometry(
   tiers: Array<{ key: string; label: string; count: number }>,
   maxPerRow = TIER_MAX_PER_ROW,
-): Array<{ key: string; label: string; slots: TierSlot[] }> {
-  let currentDy = 0;
-  let globalRow = 0;
+): { width: number; cols: number; tiers: Array<{ key: string; label: string; slots: TierSlot[] }> } {
+  const perRow = Math.max(1, Math.floor(maxPerRow));
+  const cols = Math.max(1, ...tiers.map((tier) => Math.min(perRow, tier.count)));
+  const width = cols * COL_GAP + TIER_GUTTER;
+  const firstDx = -width / 2 + TIER_GUTTER + COL_GAP / 2;
+  let row = 0;
 
-  return tiers.map(({ key, label, count }) => {
-    const numRows = Math.max(1, Math.ceil(count / maxPerRow));
-    const base = Math.floor(count / numRows);
-    const extra = count % numRows;
-    // e.g. 10 items, 3 rows: extra=1 -> rows [4, 3, 3]
-    const rowSizes = Array.from({ length: numRows }, (_, i) => (i < extra ? base + 1 : base));
-
-    const slots: TierSlot[] = [];
-    let cardIndex = 0;
-
-    rowSizes.forEach((rowSize, rowIndex) => {
-      for (let col = 0; col < rowSize; col++) {
-        const dx = (col - (rowSize - 1) / 2) * COL_GAP;
-        slots.push({
-          dx,
-          dy: currentDy + rowIndex * TIER_ROW_GAP,
-          row: globalRow + rowIndex,
-          ...(cardIndex === 0 ? { label: `${label} ${count}` } : {}),
-        });
-        cardIndex++;
-      }
-    });
-
-    currentDy += numRows * TIER_ROW_GAP;
-    globalRow += numRows;
-    return { key, label, slots };
-  });
+  return {
+    width,
+    cols,
+    tiers: tiers.map(({ key, label, count }) => {
+      const slots: TierSlot[] = [];
+      balancedRows(count, perRow).forEach((rowSize) => {
+        for (let col = 0; col < rowSize; col++) {
+          slots.push({
+            dx: firstDx + col * COL_GAP,
+            dy: row * TIER_ROW_GAP,
+            row,
+            col,
+            ...(slots.length === 0 && label ? { label: `${label} (${count})` } : {}),
+          });
+        }
+        row++;
+      });
+      return { key, label, slots };
+    }),
+  };
 }
 
-/** Groups tier-annotated leaf children of `node` into a tier block stand-in. */
+/**
+ * Groups the tier-annotated leaf children of `node` into one tier block
+ * stand-in, as wide as its widest row. Its spacers are just as wide, so the
+ * tree keeps every other box out of the block's rows.
+ */
 function buildTierBlocks(node: D3NodeDatum, tierMaxPerRow: number) {
   const kids = node.children;
   if (!kids?.length) return;
   kids.forEach((kid) => buildTierBlocks(kid, tierMaxPerRow));
 
-  // Leaves that carry tier data
   const tierLeaves = kids.filter(
-    (kid) => !kid.children?.length && kid.expanded === undefined && kid.tier,
+    (kid) => !kid.children?.length && kid.expanded === undefined && kid.tier && !kid.isSpacer,
   );
   if (tierLeaves.length < 2) return;
 
-  // Group by tier key, preserving order of first occurrence
-  const tierMap = new Map<string, { key: string; label: string; order: number; leaves: D3NodeDatum[] }>();
+  // Group by tier key; cards keep their sibling order inside a tier.
+  const groups = new Map<string, { key: string; label: string; order: number; leaves: D3NodeDatum[] }>();
   tierLeaves.forEach((leaf) => {
-    const t = leaf.tier!;
-    if (!tierMap.has(t.key)) {
-      tierMap.set(t.key, { key: t.key, label: t.label, order: t.order, leaves: [] });
-    }
-    tierMap.get(t.key)!.leaves.push(leaf);
+    const { key, label, order } = leaf.tier!;
+    const group = groups.get(key);
+    if (group) group.leaves.push(leaf);
+    else groups.set(key, { key, label, order, leaves: [leaf] });
   });
 
-  // Sort tiers by order ascending: lowest order = highest rank = top of diagram
-  const sortedTiers = [...tierMap.values()].sort((a, b) => a.order - b.order);
-
-  // Build geometry
-  const geom = tierBlockGeometry(
-    sortedTiers.map((t) => ({ key: t.key, label: t.label, count: t.leaves.length })),
+  // Lowest order = highest rank = top row. The sort is stable, so equal orders keep sibling order.
+  const sorted = [...groups.values()].sort((a, b) => (a.order === b.order ? 0 : a.order < b.order ? -1 : 1));
+  const geometry = tierBlockGeometry(
+    sorted.map((tier) => ({ key: tier.key, label: tier.label, count: tier.leaves.length })),
     tierMaxPerRow,
   );
 
-  // Build tierItems: map each leaf to its slot
-  const tierItems: Array<{ data: D3NodeDatum; slot: TierSlot }> = [];
-  sortedTiers.forEach((tier, tierIndex) => {
-    const slots = geom[tierIndex]!.slots;
-    tier.leaves.forEach((leaf, leafIndex) => {
-      tierItems.push({ data: leaf, slot: slots[leafIndex]! });
-    });
-  });
-
-  // Max cards per row (for cols metadata)
-  const maxCols = Math.min(tierMaxPerRow, Math.max(...sortedTiers.map((t) => t.leaves.length)));
-  // Vertical reach: distance from block anchor to bottom of last card
-  const maxDy = Math.max(...tierItems.map((item) => item.slot.dy));
-  const reach = maxDy + NODE_H;
+  const tierItems = sorted.flatMap((tier, tierIndex) =>
+    tier.leaves.map((leaf, leafIndex) => ({ data: leaf, slot: geometry.tiers[tierIndex]!.slots[leafIndex]! })),
+  );
+  const reach = Math.max(...tierItems.map((item) => item.slot.dy)) + NODE_H + 16;
+  const cols = geometry.width / COL_GAP;
 
   const id = `${node.id}\u0000tiers`;
   const block: D3NodeDatum = {
@@ -241,34 +268,16 @@ function buildTierBlocks(node: D3NodeDatum, tierMaxPerRow: number) {
     isSyntheticRoot: false,
     isMuted: false,
     tierItems,
-    cols: maxCols,
+    cols,
     originalId: id,
-    children: makeSpacers(id, reach, 1),
+    children: makeSpacers(id, reach, cols),
   };
-
   replaceWithBlock(node, tierLeaves, block);
+}
 
-  // Add maxCols-1 phantom siblings so D3 reserves the full horizontal width.
-  if (maxCols > 1) {
-    const updatedKids = node.children!;
-    const blockIdx = updatedKids.indexOf(block);
-    const phantoms: D3NodeDatum[] = [];
-    for (let i = 1; i < maxCols; i++) {
-      const phantomId = `${id}\u0000phantom${i}`;
-      phantoms.push({
-        id: phantomId,
-        name: '',
-        description: '',
-        isRoot: false,
-        isSyntheticRoot: false,
-        isMuted: false,
-        isSpacer: true,
-        originalId: phantomId,
-        children: makeSpacers(phantomId, reach, 1),
-      });
-    }
-    updatedKids.splice(blockIdx + 1, 0, ...phantoms);
-  }
+/** The card in `row` whose centre is closest to `x`. */
+function nearestInRow(row: PlacedNode[] | undefined, x: number): PlacedNode | undefined {
+  return row?.reduce((best, item) => (Math.abs(item.x - x) < Math.abs(best.x - x) ? item : best));
 }
 
 /**
@@ -284,7 +293,13 @@ export function layoutOrgChart(nodes: OrgChartNode[], stackLeaves = false, tierM
   buildTierBlocks(tree, tierMaxPerRow);
   if (stackLeaves) stackLeafChildren(tree);
 
-  const root = d3.tree<D3NodeDatum>().nodeSize([COL_GAP, LEVEL_GAP])(d3.hierarchy(tree));
+  const root = d3.tree<D3NodeDatum>()
+    .nodeSize([COL_GAP, LEVEL_GAP])
+    // A wide stand-in (a tier block and its spacers) keeps its neighbours its own width away.
+    // For one-column nodes this is d3's default: 1 between siblings, 2 between cousins.
+    .separation((a, b) => ((a.data.cols ?? 1) + (b.data.cols ?? 1)) / 2 + (a.parent === b.parent ? 0 : 1))(
+      d3.hierarchy(tree),
+    );
 
   const placed: PlacedNode[] = [];
   const placedOf = new Map<d3.HierarchyPointNode<D3NodeDatum>, PlacedNode>();
@@ -294,7 +309,7 @@ export function layoutOrgChart(nodes: OrgChartNode[], stackLeaves = false, tierM
     if (d.data.isSyntheticRoot || d.data.isSpacer) return;
     const parent = (d.parent && placedOf.get(d.parent)) ?? null;
 
-    const add = (data: D3NodeDatum, x: number, y: number, tierMeta?: PlacedNode['tier']): PlacedNode => {
+    const add = (data: D3NodeDatum, x: number, y: number, tierMeta?: PlacedTier): PlacedNode => {
       const item: PlacedNode = {
         x, y, data, parent, children: [],
         ...(tierMeta !== undefined ? { tier: tierMeta } : {}),
@@ -318,17 +333,36 @@ export function layoutOrgChart(nodes: OrgChartNode[], stackLeaves = false, tierM
     }
 
     if (d.data.tierItems) {
-      // The stand-in sits at column 0; the block centre is shifted right.
-      const cols = d.data.cols ?? 1;
-      const blockCenterX = d.x + (cols - 1) / 2 * COL_GAP;
+      const width = (d.data.cols ?? 1) * COL_GAP;
+      const cardCols = Math.round((width - TIER_GUTTER) / COL_GAP);
+      // Left edge of the first card column; the spine runs in the gutter just left of it.
+      const labelX = d.x - width / 2 + TIER_GUTTER + (COL_GAP - NODE_W) / 2;
+      const spineX = labelX - TIER_SPINE_INSET;
+      const labelMaxWidth = cardCols * COL_GAP - (COL_GAP - NODE_W);
+      const rows: PlacedNode[][] = [];
       d.data.tierItems.forEach(({ data, slot }) => {
-        add(data, blockCenterX + slot.dx, d.y + slot.dy, {
+        const y = d.y + slot.dy;
+        const item = add(data, d.x + slot.dx, y, {
           row: slot.row,
-          blockX: blockCenterX,
+          col: slot.col,
+          blockX: d.x,
           blockY: d.y,
+          spineX,
+          busY: y - NODE_H / 2 - TIER_BUS_OFFSET,
+          labelX,
+          labelMaxWidth,
           ...(slot.label !== undefined ? { label: slot.label } : {}),
         });
+        if (!rows[slot.row]) rows[slot.row] = [];
+        rows[slot.row]!.push(item);
       });
+      // Up / Down move to the nearest card in the row above / below.
+      rows.forEach((row, index) => row.forEach((item) => {
+        const prev = nearestInRow(rows[index - 1], item.x);
+        const next = nearestInRow(rows[index + 1], item.x);
+        if (prev) item.stackPrev = prev;
+        if (next) item.stackNext = next;
+      }));
       return;
     }
 

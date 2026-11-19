@@ -58,7 +58,7 @@
 import * as d3 from 'd3';
 import { useEffect, useRef, useId, useState, type KeyboardEvent } from 'react';
 import { Scan, ZoomIn, ZoomOut } from 'lucide-react';
-import { layoutOrgChart, NODE_H, NODE_W, TIER_ROW_GAP, type PlacedNode } from './orgChartLayout';
+import { COL_GAP, layoutOrgChart, NODE_H, NODE_W, TIER_ROW_GAP, type PlacedNode } from './orgChartLayout';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -405,6 +405,7 @@ export function OrgChart({
 
     if (nodes.length === 0) {
       linkLayer.selectAll('*').remove();
+      svg.select<SVGGElement>('g.oc-tier-labels').selectAll('*').remove();
       nodeLayer.selectAll('*').remove();
       treeBoundsRef.current = null;
       return;
@@ -429,20 +430,20 @@ export function OrgChart({
       .attr('stroke', '#cbd5e1')
       .attr('stroke-width', 1.5)
       .attr('d', (d) => {
-        // A stacked card hangs from the one above it; the line runs behind the cards.
-        if (d.stackPrev) return `M${d.x},${d.stackPrev.y}V${d.y}`;
         const from = d.parent!;
         if (d.tier !== undefined) {
-          const busY = d.tier.row === 0
-            ? (from.y + d.y) / 2
-            : d.y - TIER_ROW_GAP / 2;
-          // The first card of the first tier row draws the vertical stem from the parent.
-          if (d.tier.row === 0 && d.tier.label !== undefined) {
-            return `M${from.x},${from.y}V${busY}H${d.x}V${d.y}`;
+          const { row, col, blockY, spineX, busY } = d.tier;
+          if (row === 0 && col === 0) {
+            const mid = (from.y + blockY) / 2;
+            return `M${from.x},${from.y}V${mid}H${spineX}V${busY}H${d.x}V${d.y}`;
           }
-          // All other cards branch from the parent's x-axis at the bus level.
-          return `M${from.x},${busY}H${d.x}V${d.y}`;
+          if (col === 0) {
+            return `M${spineX},${busY - TIER_ROW_GAP}V${busY}H${d.x}V${d.y}`;
+          }
+          return `M${d.x - COL_GAP},${busY}H${d.x}V${d.y}`;
         }
+        // A stacked card hangs from the one above it; the line runs behind the cards.
+        if (d.stackPrev) return `M${d.x},${d.stackPrev.y}V${d.y}`;
         const mid = (from.y + d.y) / 2;
         return `M${from.x},${from.y}V${mid}H${d.x}V${d.y}`;
       });
@@ -454,10 +455,12 @@ export function OrgChart({
       .data(placed.filter((d) => d.tier?.label !== undefined), (d) => `tl-${d.data.originalId}`)
       .join('text')
       .attr('class', 'oc-tier-label')
-      .attr('x', (d) => d.tier!.blockX)
-      .attr('y', (d) => d.y - NODE_H / 2 - 7)
-      .attr('text-anchor', 'middle')
-      .text((d) => d.tier!.label!);
+      .attr('x', (d) => d.tier!.labelX)
+      .attr('y', (d) => d.tier!.busY - 6)
+      .attr('text-anchor', 'start')
+      .each(function (d) {
+        fitText(this, d.tier!.label!, d.tier!.labelMaxWidth, 10);
+      });
 
     /** The node an arrow key moves to: null when there is none, undefined for other keys. */
     const neighbour = (d: PlacedNode, key: string): PlacedNode | null | undefined => {
@@ -648,7 +651,7 @@ export function OrgChart({
         #${uid} .oc-node.is-selected .oc-ring { opacity: 0.6; }
         #${uid} .oc-node:focus { outline: none; }
         #${uid} .oc-node:focus-visible .oc-ring { opacity: 1; stroke: #2563eb; }
-        #${uid} .oc-tier-label { font-size: 9px; font-weight: 700; fill: #94a3b8; letter-spacing: 0.06em; text-transform: uppercase; pointer-events: none; }
+        #${uid} .oc-tier-label { font-size: 10px; font-weight: 700; fill: #64748b; letter-spacing: 0.05em; text-transform: uppercase; pointer-events: none; }
       `}</style>
 
       {/* Zoom controls — top-right panel */}

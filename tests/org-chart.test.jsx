@@ -329,3 +329,103 @@ describe('OrgChart nodes', () => {
     expect(container.querySelectorAll('g.oc-node')).toHaveLength(0);
   });
 });
+
+
+describe('layoutOrgChart rank tiers', () => {
+  const byId = (placed) => Object.fromEntries(placed.map((p) => [p.data.originalId, p]));
+  const overlaps = (a, b) => Math.abs(a.x - b.x) < 250 && Math.abs(a.y - b.y) < 84;
+
+  test('orders higher rank/level tiers above lower ones and wraps large tiers into balanced rows', () => {
+    const high = { key: 'r4:4A', label: 'R4 RANK & FILE - LEVEL 4A', order: 40001 };
+    const mid = { key: 'r4:4B', label: 'R4 RANK & FILE - LEVEL 4B', order: 40002 };
+    const low = { key: 'r4:0', label: 'R4 RANK & FILE - LEVEL 0', order: 40006 };
+    const tree = [{
+      id: 'it', label: 'IT', children: [
+        { id: 'head', label: 'IT Manager', children: [
+          { id: 'intern', label: 'IT Intern', tier: low },
+          { id: 'jr1', label: 'Jr Dev I', tier: mid },
+          { id: 'jr2', label: 'Jr Dev II', tier: mid },
+          { id: 'jr3', label: 'Jr Dev III', tier: mid },
+          { id: 'jr4', label: 'Jr Dev IV', tier: mid },
+          { id: 'jr5', label: 'Jr Dev V', tier: mid },
+          { id: 'jr6', label: 'Jr Dev VI', tier: mid },
+          { id: 'sr1', label: 'Sr Dev I', tier: high },
+          { id: 'sr2', label: 'Sr Dev II', tier: high },
+        ] },
+      ],
+    }];
+
+    const placed = layoutOrgChart(tree, true);
+    const at = byId(placed);
+
+    // Higher levels sit strictly above lower levels regardless of input order.
+    expect(at.sr1.y).toBe(at.sr2.y);
+    expect(at.sr1.y).toBeLessThan(at.jr1.y);
+    // 6 cards wrap into 3 + 3 balanced rows.
+    expect(new Set([at.jr1.y, at.jr2.y, at.jr3.y]).size).toBe(1);
+    expect(new Set([at.jr4.y, at.jr5.y, at.jr6.y]).size).toBe(1);
+    expect(at.jr1.y).toBeLessThan(at.jr4.y);
+    expect(at.jr4.y).toBeLessThan(at.intern.y);
+
+    // Every placed card is a real input node (no empty spacer boxes).
+    expect(placed.every((p) => p.data.name.length > 0)).toBe(true);
+    expect(placed).toHaveLength(11);
+  });
+
+  test('never produces empty boxes or node collisions with sibling sub-units when stackLeaves is on', () => {
+    const t1 = { key: 'r2:6B', label: 'R2 MANAGEMENT - LEVEL 6B', order: 20002 };
+    const t2 = { key: 'r4:4A', label: 'R4 RANK & FILE - LEVEL 4A', order: 40001 };
+    const t3 = { key: 'r4:0', label: 'R4 RANK & FILE - LEVEL 0', order: 40006 };
+    const tree = [{
+      id: 'hrmd', label: 'Human Resource Management', children: [
+        { id: 'chro', label: 'CHRO', children: [
+          { id: 'vp', label: 'VP of HRMD', tier: t1 },
+          { id: 'spec1', label: 'HR Specialist 1', tier: t2 },
+          { id: 'spec2', label: 'HR Specialist 2', tier: t2 },
+          { id: 'spec3', label: 'HR Specialist 3', tier: t2 },
+          { id: 'spec4', label: 'HR Specialist 4', tier: t2 },
+          { id: 'intern', label: 'HR Intern', tier: t3 },
+          { id: 'sub', label: 'DLSI', children: [
+            { id: 'sup', label: 'HRMD Supervisor', children: [
+              { id: 'sub1', label: 'Sub Staff 1', tier: t2 },
+              { id: 'sub2', label: 'Sub Staff 2', tier: t2 },
+            ] },
+          ] },
+        ] },
+        { id: 'sales', label: 'Sales', children: [
+          { id: 'sm', label: 'Sales Manager', children: [
+            { id: 'asm', label: 'Account Sales Manager', tier: t3 },
+            { id: 'lss', label: 'Learning Systems Specialist', tier: t3 },
+            { id: 'drv', label: 'Driver', tier: t3 },
+            { id: 'clk', label: 'Clerk', tier: t3 },
+          ] },
+        ] },
+      ],
+    }];
+
+    const placed = layoutOrgChart(tree, true);
+    expect(placed.every((p) => p.data.name.length > 0)).toBe(true);
+    placed.forEach((a, i) => placed.slice(i + 1).forEach((b) => {
+      expect(overlaps(a, b)).toBe(false);
+    }));
+  });
+
+  test('renders tier headings with counts and clears them when nodes become empty', () => {
+    const high = { key: 'r3:5', label: 'R3 SUPERVISORY - LEVEL 5', order: 30001 };
+    const low = { key: 'r4:4A', label: 'R4 RANK & FILE - LEVEL 4A', order: 40001 };
+    const tree = [{
+      id: 'u', label: 'Unit', children: [
+        { id: 'a', label: 'Lead', tier: high },
+        { id: 'b', label: 'Dev 1', tier: low },
+        { id: 'c', label: 'Dev 2', tier: low },
+      ],
+    }];
+
+    const { container, rerender } = render(<OrgChart nodes={tree} stackLeaves />);
+    const labels = [...container.querySelectorAll('text.oc-tier-label')].map((el) => el.textContent);
+    expect(labels).toEqual(['R3 SUPERVISORY - LEVEL 5 (1)', 'R4 RANK & FILE - LEVEL 4A (2)']);
+
+    rerender(<OrgChart nodes={[]} stackLeaves />);
+    expect(container.querySelectorAll('text.oc-tier-label')).toHaveLength(0);
+  });
+});
