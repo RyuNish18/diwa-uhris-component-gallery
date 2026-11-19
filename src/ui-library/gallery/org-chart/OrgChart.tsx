@@ -58,7 +58,7 @@
 import * as d3 from 'd3';
 import { useEffect, useRef, useId, useState, type KeyboardEvent } from 'react';
 import { Scan, ZoomIn, ZoomOut } from 'lucide-react';
-import { layoutOrgChart, NODE_H, NODE_W, type PlacedNode } from './orgChartLayout';
+import { layoutOrgChart, NODE_H, NODE_W, TIER_ROW_GAP, type PlacedNode } from './orgChartLayout';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -87,6 +87,14 @@ export interface OrgChartNode {
    * consumer owns the state: handle `onToggle` and pass new `children`.
    */
   expanded?: boolean;
+  /**
+   * Rank tier this card belongs to. When two or more sibling leaves share
+   * a tier key, the layout groups them into horizontal rows instead of one
+   * long column. `order` controls which tier sits highest (lowest order =
+   * highest rank = top). `label` is shown as a small heading above each
+   * tier's first row (e.g. "R1 MANAGEMENT").
+   */
+  tier?: { key: string; label: string; order: number };
   /** Child nodes. */
   children?: OrgChartNode[];
 }
@@ -109,6 +117,11 @@ export interface OrgChartProps {
    * wide row (two or more of them). Keeps big flat teams readable.
    */
   stackLeaves?: boolean;
+  /**
+   * Maximum position cards per row inside a rank-tier block. Cards beyond
+   * this wrap to the next row in a balanced distribution. Default: 4.
+   */
+  tierMaxPerRow?: number;
   /**
    * The smallest zoom an automatic fit may use. When the whole tree would
    * only fit below it, the chart opens at this zoom with the top of the tree
@@ -177,6 +190,7 @@ export function OrgChart({
   onSelect,
   onToggle,
   stackLeaves = false,
+  tierMaxPerRow,
   minFitScale = MIN_SCALE,
   fitKey,
   height = '75vh',
@@ -324,6 +338,7 @@ export function OrgChart({
 
     const viewport = svg.append('g').attr('class', 'oc-viewport');
     viewport.append('g').attr('class', 'oc-links');
+    viewport.append('g').attr('class', 'oc-tier-labels');
     viewport.append('g').attr('class', 'oc-nodes');
 
     const zoom = d3.zoom<SVGSVGElement, unknown>()
@@ -395,7 +410,7 @@ export function OrgChart({
       return;
     }
 
-    const placed = layoutOrgChart(nodes, stackLeaves);
+    const placed = layoutOrgChart(nodes, stackLeaves, tierMaxPerRow);
     const roots = placed.filter((d) => !d.parent);
     treeBoundsRef.current = {
       minX: d3.min(placed, (d) => d.x) ?? 0,
@@ -417,9 +432,32 @@ export function OrgChart({
         // A stacked card hangs from the one above it; the line runs behind the cards.
         if (d.stackPrev) return `M${d.x},${d.stackPrev.y}V${d.y}`;
         const from = d.parent!;
+        if (d.tier !== undefined) {
+          const busY = d.tier.row === 0
+            ? (from.y + d.y) / 2
+            : d.y - TIER_ROW_GAP / 2;
+          // The first card of the first tier row draws the vertical stem from the parent.
+          if (d.tier.row === 0 && d.tier.label !== undefined) {
+            return `M${from.x},${from.y}V${busY}H${d.x}V${d.y}`;
+          }
+          // All other tier cards branch from the block's x-axis at the bus level.
+          return `M${d.tier.blockX},${busY}H${d.x}V${d.y}`;
+        }
         const mid = (from.y + d.y) / 2;
         return `M${from.x},${from.y}V${mid}H${d.x}V${d.y}`;
       });
+
+    // ── Tier headings ───────────────────────────────────────────────────────
+    const tierLabelLayer = svg.select<SVGGElement>('g.oc-tier-labels');
+    tierLabelLayer
+      .selectAll<SVGTextElement, PlacedNode>('text.oc-tier-label')
+      .data(placed.filter((d) => d.tier?.label !== undefined), (d) => `tl-${d.data.originalId}`)
+      .join('text')
+      .attr('class', 'oc-tier-label')
+      .attr('x', (d) => d.x)
+      .attr('y', (d) => d.y - NODE_H / 2 - 7)
+      .attr('text-anchor', 'middle')
+      .text((d) => d.tier!.label!);
 
     /** The node an arrow key moves to: null when there is none, undefined for other keys. */
     const neighbour = (d: PlacedNode, key: string): PlacedNode | null | undefined => {
@@ -516,7 +554,7 @@ export function OrgChart({
     if (autoFitRef.current || pendingFitRef.current) fitToView();
     // fitToView reads refs only.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [nodes, stackLeaves, togglable]);
+  }, [nodes, stackLeaves, tierMaxPerRow, togglable]);
 
   // Focusability / button semantics follow whether nodes are selectable.
   useEffect(() => {
@@ -525,7 +563,7 @@ export function OrgChart({
     syncTabStops();
     // syncTabStops reads refs only.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [interactive, nodes, stackLeaves]);
+  }, [interactive, nodes, stackLeaves, tierMaxPerRow]);
 
   // ── Selection: restyle in place, never redraw or refit ──────────────────────
   useEffect(() => {
@@ -610,6 +648,7 @@ export function OrgChart({
         #${uid} .oc-node.is-selected .oc-ring { opacity: 0.6; }
         #${uid} .oc-node:focus { outline: none; }
         #${uid} .oc-node:focus-visible .oc-ring { opacity: 1; stroke: #2563eb; }
+        #${uid} .oc-tier-label { font-size: 9px; font-weight: 700; fill: #94a3b8; letter-spacing: 0.06em; text-transform: uppercase; pointer-events: none; }
       `}</style>
 
       {/* Zoom controls — top-right panel */}
