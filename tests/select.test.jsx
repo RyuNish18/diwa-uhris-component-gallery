@@ -10,6 +10,7 @@ const React = require('react');
 const { render, screen, fireEvent, act } = require('@testing-library/react');
 const { Select } = require('../src/ui-library/gallery/select/Select');
 const Modal = require('../src/ui-library/gallery/modal/Modal').default;
+const { Popover, PopoverTrigger, PopoverContent } = require('../src/ui-library/gallery/popover/Popover');
 
 const ITEMS = [
   { value: '', label: 'Choose rank' },
@@ -159,5 +160,86 @@ describe('Select inside an open Modal', () => {
     fireEvent.keyDown(trigger(), { key: 'Escape' });
     expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
     expect(onClose).not.toHaveBeenCalled();
+  });
+});
+
+describe('Select inside an open Popover', () => {
+  function PopoverWithSelect({ onChange, onOpenChange }) {
+    const [open, setOpen] = React.useState(true);
+    return h(
+      Popover,
+      {
+        open,
+        onOpenChange: (next) => {
+          onOpenChange?.(next);
+          setOpen(next);
+        },
+      },
+      h(PopoverTrigger, null, 'Table options'),
+      h(PopoverContent, { title: 'Table options' }, h(Controlled, { onChange })),
+    );
+  }
+
+  it('portals the listbox to document.body and selects an option without closing the popover', async () => {
+    const onChange = jest.fn();
+    const onOpenChange = jest.fn();
+    render(h(PopoverWithSelect, { onChange, onOpenChange }));
+
+    fireEvent.click(trigger());
+    const listbox = await screen.findByRole('listbox');
+    const dialog = screen.getByRole('dialog');
+    expect(listbox.parentElement).toBe(document.body);
+    expect(dialog).not.toContainElement(listbox);
+
+    const option = screen.getByRole('option', { name: '1: Executive' });
+    await act(async () => {
+      fireEvent.pointerDown(option);
+      fireEvent.mouseDown(option);
+      fireEvent.pointerUp(option);
+      fireEvent.mouseUp(option);
+      fireEvent.click(option);
+    });
+
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange.mock.calls[0][0].target.value).toBe('exec');
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+    expect(onOpenChange).not.toHaveBeenCalledWith(false);
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+  });
+
+  it('closes only the listbox on Escape and still closes the popover on outside click', async () => {
+    const onOpenChange = jest.fn();
+    render(h(PopoverWithSelect, { onOpenChange }));
+
+    fireEvent.click(trigger());
+    expect(await screen.findByRole('listbox')).toBeInTheDocument();
+
+    fireEvent.keyDown(trigger(), { key: 'Escape' });
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+    expect(onOpenChange).not.toHaveBeenCalledWith(false);
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+
+    await act(async () => {
+      fireEvent.pointerDown(document.body);
+      fireEvent.mouseDown(document.body);
+      fireEvent.pointerUp(document.body);
+      fireEvent.mouseUp(document.body);
+    });
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it('portals to document.body when an enclosing dialog has a CSS transform', async () => {
+    render(
+      h(
+        'div',
+        { role: 'dialog', style: { transform: 'translate(-50%, -50%)' } },
+        h(Controlled),
+      ),
+    );
+
+    fireEvent.click(trigger());
+    const listbox = await screen.findByRole('listbox');
+    expect(listbox.parentElement).toBe(document.body);
+    expect(screen.getByRole('dialog')).not.toContainElement(listbox);
   });
 });

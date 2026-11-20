@@ -39,7 +39,7 @@
 
 import * as PopoverPrimitive from '@radix-ui/react-popover';
 import { type ReactNode } from 'react';
-import { cn } from '../../../lib/utils';
+import { cn, FLOATING_LAYER_SELECTOR } from '../../../lib/utils';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -176,6 +176,15 @@ export function PopoverContent({
         // Radix will flip to the opposite side if the preferred side clips
         // the viewport (collision detection via @floating-ui/dom internally).
         // avoidCollisions is true by default.
+        onInteractOutside={(e) => {
+          // Keep the popover open when interacting with a floating layer
+          // (Select listbox, Menu panel, DatePicker calendar) portaled to
+          // document.body outside this popover content node.
+          const target = e.target as Element | null;
+          if (target?.closest(FLOATING_LAYER_SELECTOR)) {
+            e.preventDefault();
+          }
+        }}
         className={cn(
           // DIWA visual treatment — matches the pre-migration appearance exactly
           'z-50 w-max rounded-xl border border-slate-200 bg-white shadow-lg',

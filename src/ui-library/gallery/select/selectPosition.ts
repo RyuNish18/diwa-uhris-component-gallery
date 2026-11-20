@@ -61,6 +61,44 @@ export function computeSelectPanelStyle(
   return { position: 'fixed', top, left: triggerRect.left, width: triggerRect.width, maxHeight };
 }
 
+function createsFixedContainingBlock(el: HTMLElement): boolean {
+  // Radix Popper positions its wrapper with inline `transform: translate(...)`,
+  // which turns it into the containing block for any `position: fixed` child.
+  if (el.hasAttribute('data-radix-popper-content-wrapper')) return true;
+
+  const style = getComputedStyle(el);
+  if (Boolean(style.transform) && style.transform !== 'none') return true;
+  if (Boolean(style.perspective) && style.perspective !== 'none') return true;
+  if (Boolean(style.filter) && style.filter !== 'none') return true;
+  const { backdropFilter } = style as CSSStyleDeclaration & { backdropFilter?: string };
+  if (Boolean(backdropFilter) && backdropFilter !== 'none') return true;
+  if (Boolean(style.willChange) && /\b(transform|perspective|filter|backdrop-filter)\b/.test(style.willChange)) return true;
+  if (Boolean(style.contain) && /\b(paint|layout|strict|content)\b/.test(style.contain)) return true;
+
+  return false;
+}
+
+/**
+ * Resolves where Select should portal its `position: fixed` listbox.
+ * Portals into an untransformed `[role="dialog"]` (like Modal) so Radix's
+ * scroll lock permits wheel/touch scrolling on the list, and falls back to
+ * `document.body` when the dialog or any ancestor establishes a containing
+ * block for fixed-positioned descendants (e.g. Popover's transformed popper
+ * wrapper or a translated Dialog).
+ */
+export function resolveSelectPortalTarget(triggerWrapper: HTMLElement | null): HTMLElement {
+  const dialog = triggerWrapper?.closest<HTMLElement>('[role="dialog"]');
+  if (!dialog) return document.body;
+
+  let node: HTMLElement | null = dialog;
+  while (node && node !== document.body && node !== document.documentElement) {
+    if (createsFixedContainingBlock(node)) return document.body;
+    node = node.parentElement;
+  }
+
+  return dialog;
+}
+
 /**
  * Nearest *vertical* scroll container of `el`, used to bound the option panel.
  * Re-exported from lib/utils so Select and Dropdown share one implementation.

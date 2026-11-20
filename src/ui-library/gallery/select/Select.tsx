@@ -24,7 +24,7 @@ import {
   FIELD_HELPER_COLOR,
 } from '../shared/fieldStatus';
 import { cn, FLOATING_LAYER_ATTR, getTopInsetAt } from '../../../lib/utils';
-import { computeSelectPanelStyle, getScrollableAncestor } from './selectPosition';
+import { computeSelectPanelStyle, getScrollableAncestor, resolveSelectPortalTarget } from './selectPosition';
 
 export type SelectStatus = FieldStatus;
 
@@ -130,7 +130,7 @@ export function Select({
     if (disabled) return;
     const fallback = at === 'last' ? nextEnabled(options.length - 1, -1) : nextEnabled(0, 1);
     setHighlight(at === 'selected' && selected && !selected.disabled ? selectedIndex : fallback);
-    setPortalTarget(wrapperRef.current?.closest<HTMLElement>('[role="dialog"]') ?? document.body);
+    setPortalTarget(resolveSelectPortalTarget(wrapperRef.current));
     setOpen(true);
   };
 
@@ -146,10 +146,12 @@ export function Select({
   };
 
   // ── Panel positioning: anchored to the trigger while any ancestor scrolls ──
-  // Inside a Modal/Dialog the panel is portaled into the dialog so its scroll
-  // lock lets wheel/touch gestures scroll the list. There it is positioned
-  // absolute against its offset parent, which also survives transformed
-  // dialogs (a transform would break position: fixed).
+  // The panel uses `position: fixed` (viewport coords). Inside an untransformed
+  // Modal (`[role="dialog"]`), portaling into the dialog lets Radix's scroll
+  // lock allow wheel/touch scrolling on the list. When the dialog or an ancestor
+  // creates a `position: fixed` containing block (such as Radix Popover's
+  // transformed popper wrapper or a translated Dialog), portal to document.body
+  // instead so viewport coordinates stay accurate.
 
   useLayoutEffect(() => {
     if (!open) return;
